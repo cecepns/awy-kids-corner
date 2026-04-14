@@ -185,17 +185,27 @@ const ensureNotesTable = async () => {
   try {
     await connection.execute(
       `
-      CREATE TABLE IF NOT EXISTS notes (
+      CREATE TABLE IF NOT EXISTS notes_sheets (
         id BIGINT PRIMARY KEY AUTO_INCREMENT,
-        data_name VARCHAR(150) NOT NULL,
-        hutang DECIMAL(15,2) NOT NULL DEFAULT 0,
-        total DECIMAL(15,2) NOT NULL DEFAULT 0,
-        dead VARCHAR(120) NULL,
+        name VARCHAR(120) NOT NULL DEFAULT 'Catatan Utama',
+        columns_json LONGTEXT NOT NULL,
+        rows_json LONGTEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
       `,
     )
+
+    const [rows] = await connection.execute('SELECT id FROM notes_sheets LIMIT 1')
+    if (!rows.length) {
+      await connection.execute(
+        `
+        INSERT INTO notes_sheets (name, columns_json, rows_json)
+        VALUES (?, ?, ?)
+        `,
+        ['Catatan Utama', JSON.stringify(['Data', 'Hutang', 'Total', 'Dead']), JSON.stringify([])],
+      )
+    }
   } finally {
     connection.release()
   }
@@ -1170,38 +1180,28 @@ app.get('/api/activity', async (req, res) => {
   }
 })
 
-app.get('/api/notes', async (req, res) => {
+app.get('/api/notes', async (_req, res) => {
   try {
-    const search = String(req.query.search || '').trim()
-    const { page, limit } = parsePagination(req.query)
-    const params = []
-    let where = ''
-    if (search) {
-      where = 'WHERE data_name LIKE ? OR dead LIKE ?'
-      const searchValue = `%${search}%`
-      params.push(searchValue, searchValue)
-    }
-
-    const [countRows] = await pool.execute(`SELECT COUNT(*) AS total FROM notes ${where}`, params)
-    const meta = buildPaginationMeta(page, limit, Number(countRows[0]?.total || 0))
     const [rows] = await pool.execute(
       `
-      SELECT id, data_name, hutang, total, dead, created_at, updated_at
-      FROM notes
-      ${where}
-      ORDER BY created_at DESC, id DESC
-      LIMIT ? OFFSET ?
+      SELECT id, name, columns_json, rows_json, updated_at
+      FROM notes_sheets
+      ORDER BY id ASC
+      LIMIT 1
       `,
-      [...params, meta.limit, meta.offset],
     )
+    if (!rows.length) {
+      return res.status(404).json({ message: 'Sheet catatan tidak ditemukan' })
+    }
 
+    const sheet = rows[0]
     res.json({
-      data: rows,
-      meta: {
-        page: meta.page,
-        limit: meta.limit,
-        total_items: meta.total_items,
-        total_pages: meta.total_pages,
+      data: {
+        id: sheet.id,
+        name: sheet.name,
+        columns: JSON.parse(sheet.columns_json || '[]'),
+        rows: JSON.parse(sheet.rows_json || '[]'),
+        updated_at: sheet.updated_at,
       },
     })
   } catch (error) {
@@ -1212,23 +1212,54 @@ app.get('/api/notes', async (req, res) => {
 app.post('/api/notes', async (req, res) => {
   const connection = await pool.getConnection()
   try {
-    const { data_name, hutang, total, dead } = req.body
-    const normalizedData = String(data_name || '').trim()
-    if (!normalizedData) {
-      return res.status(400).json({ message: 'Kolom data wajib diisi' })
+    const columns = Array.isArray(req.body.columns) ? req.body.columns : []
+    const rows = Array.isArray(req.body.rows) ? req.body.rows : []
+
+    if (!columns.length) {
+      return res.status(400).json({ message: 'Minimal harus ada 1 kolom' })
     }
 
+    const normalizedColumns = columns
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+      .slice(0, 30)
+    if (!normalizedColumns.length) {
+      return res.status(400).json({ message: 'Nama kolom tidak boleh kosong' })
+    }
+
+    const normalizedRows = rows.slice(0, 1000).map((row) => {
+      const source = row && typeof row === 'object' ? row : {}
+      const normalizedRow = {}
+      normalizedColumns.forEach((column) => {
+        normalizedRow[column] = String(source[column] ?? '').slice(0, 500)
+      })
+      return normalizedRow
+    })
+
     await connection.beginTransaction()
-    const [insert] = await connection.execute(
-      `
-      INSERT INTO notes (data_name, hutang, total, dead)
-      VALUES (?, ?, ?, ?)
-      `,
-      [normalizedData, Number(hutang || 0), Number(total || 0), String(dead || '').trim() || null],
-    )
-    await logActivity(connection, 'CREATE_NOTE', `Menambahkan catatan ${normalizedData}`)
+    const [sheetRows] = await connection.execute('SELECT id FROM notes_sheets ORDER BY id ASC LIMIT 1')
+    if (!sheetRows.length) {
+      await connection.execute(
+        `
+        INSERT INTO notes_sheets (name, columns_json, rows_json)
+        VALUES (?, ?, ?)
+        `,
+        ['Catatan Utama', JSON.stringify(normalizedColumns), JSON.stringify(normalizedRows)],
+      )
+    } else {
+      await connection.execute(
+        `
+        UPDATE notes_sheets
+        SET columns_json = ?, rows_json = ?
+        WHERE id = ?
+        `,
+        [JSON.stringify(normalizedColumns), JSON.stringify(normalizedRows), sheetRows[0].id],
+      )
+    }
+
+    await logActivity(connection, 'SAVE_NOTE_SHEET', `Menyimpan sheet catatan (${normalizedRows.length} baris)`)
     await connection.commit()
-    res.status(201).json({ id: insert.insertId, message: 'Catatan berhasil ditambahkan' })
+    res.json({ message: 'Catatan berhasil disimpan' })
   } catch (error) {
     await connection.rollback()
     res.status(500).json({ message: error.message })
@@ -1237,57 +1268,34 @@ app.post('/api/notes', async (req, res) => {
   }
 })
 
-app.put('/api/notes/:id', async (req, res) => {
+app.post('/api/notes/reset', async (_req, res) => {
   const connection = await pool.getConnection()
   try {
-    const { id } = req.params
-    const { data_name, hutang, total, dead } = req.body
-    const normalizedData = String(data_name || '').trim()
-    if (!normalizedData) {
-      return res.status(400).json({ message: 'Kolom data wajib diisi' })
-    }
-
     await connection.beginTransaction()
-    const [rows] = await connection.execute('SELECT id FROM notes WHERE id = ?', [id])
-    if (!rows.length) {
-      await connection.rollback()
-      return res.status(404).json({ message: 'Catatan tidak ditemukan' })
+    const defaultColumns = ['Data', 'Hutang', 'Total', 'Dead']
+    const [sheetRows] = await connection.execute('SELECT id FROM notes_sheets ORDER BY id ASC LIMIT 1')
+    if (!sheetRows.length) {
+      await connection.execute(
+        `
+        INSERT INTO notes_sheets (name, columns_json, rows_json)
+        VALUES (?, ?, ?)
+        `,
+        ['Catatan Utama', JSON.stringify(defaultColumns), JSON.stringify([])],
+      )
+    } else {
+      await connection.execute(
+        `
+        UPDATE notes_sheets
+        SET columns_json = ?, rows_json = ?
+        WHERE id = ?
+        `,
+        [JSON.stringify(defaultColumns), JSON.stringify([]), sheetRows[0].id],
+      )
     }
 
-    await connection.execute(
-      `
-      UPDATE notes
-      SET data_name = ?, hutang = ?, total = ?, dead = ?
-      WHERE id = ?
-      `,
-      [normalizedData, Number(hutang || 0), Number(total || 0), String(dead || '').trim() || null, id],
-    )
-    await logActivity(connection, 'UPDATE_NOTE', `Memperbarui catatan ${normalizedData}`)
+    await logActivity(connection, 'RESET_NOTE_SHEET', 'Reset sheet catatan')
     await connection.commit()
-    res.json({ message: 'Catatan berhasil diperbarui' })
-  } catch (error) {
-    await connection.rollback()
-    res.status(500).json({ message: error.message })
-  } finally {
-    connection.release()
-  }
-})
-
-app.delete('/api/notes/:id', async (req, res) => {
-  const connection = await pool.getConnection()
-  try {
-    const { id } = req.params
-    await connection.beginTransaction()
-    const [rows] = await connection.execute('SELECT id, data_name FROM notes WHERE id = ?', [id])
-    if (!rows.length) {
-      await connection.rollback()
-      return res.status(404).json({ message: 'Catatan tidak ditemukan' })
-    }
-
-    await connection.execute('DELETE FROM notes WHERE id = ?', [id])
-    await logActivity(connection, 'DELETE_NOTE', `Menghapus catatan ${rows[0].data_name}`)
-    await connection.commit()
-    res.json({ message: 'Catatan berhasil dihapus' })
+    res.json({ message: 'Catatan berhasil direset' })
   } catch (error) {
     await connection.rollback()
     res.status(500).json({ message: error.message })

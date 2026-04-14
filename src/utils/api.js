@@ -44,10 +44,9 @@ export const apiService = {
   updateOutgoing: (id, payload) => api.put(`/outgoing/${id}`, payload),
   deleteOutgoing: (id) => api.delete(`/outgoing/${id}`),
 
-  getNotes: (params) => api.get('/notes', { params }),
-  createNote: (payload) => api.post('/notes', payload),
-  updateNote: (id, payload) => api.put(`/notes/${id}`, payload),
-  deleteNote: (id) => api.delete(`/notes/${id}`),
+  getNotes: () => api.get('/notes'),
+  saveNotes: (payload) => api.post('/notes', payload),
+  resetNotes: () => api.post('/notes/reset'),
 
   getBookkeeping: (params) => api.get('/bookkeeping', { params }),
   updateBookkeeping: (payload) => api.post('/bookkeeping', payload),
