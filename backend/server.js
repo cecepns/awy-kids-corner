@@ -94,27 +94,6 @@ const getProductAveragePurchasePrice = async (connection, productId) => {
   return totalCost / totalQty
 }
 
-const getSupplierNameById = async (connection, supplierId) => {
-  const [rows] = await connection.execute('SELECT id, name, is_active FROM suppliers WHERE id = ?', [supplierId])
-  return rows[0]
-}
-
-const resolveSupplierName = async (connection, supplierId, supplierName) => {
-  if (supplierId) {
-    const supplier = await getSupplierNameById(connection, Number(supplierId))
-    if (!supplier) {
-      return { error: 'Supplier tidak ditemukan' }
-    }
-    if (!supplier.is_active) {
-      return { error: 'Supplier nonaktif tidak dapat dipilih' }
-    }
-    return { name: supplier.name }
-  }
-
-  const normalized = String(supplierName || '').trim()
-  return { name: normalized || null }
-}
-
 const sanitizeUser = (user) => ({
   id: user.id,
   name: user.name,
@@ -176,28 +155,6 @@ const ensureDefaultAdmin = async () => {
   }
 }
 
-const ensureSuppliersTable = async () => {
-  const connection = await pool.getConnection()
-  try {
-    await connection.execute(
-      `
-      CREATE TABLE IF NOT EXISTS suppliers (
-        id BIGINT PRIMARY KEY AUTO_INCREMENT,
-        name VARCHAR(150) NOT NULL UNIQUE,
-        phone VARCHAR(50) NULL,
-        address TEXT NULL,
-        notes TEXT NULL,
-        is_active TINYINT(1) NOT NULL DEFAULT 1,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      )
-      `,
-    )
-  } finally {
-    connection.release()
-  }
-}
-
 const ensureIncomingGoodsPriceColumns = async () => {
   const connection = await pool.getConnection()
   try {
@@ -218,6 +175,27 @@ const ensureIncomingGoodsPriceColumns = async () => {
         `,
       )
     }
+  } finally {
+    connection.release()
+  }
+}
+
+const ensureNotesTable = async () => {
+  const connection = await pool.getConnection()
+  try {
+    await connection.execute(
+      `
+      CREATE TABLE IF NOT EXISTS notes (
+        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+        data_name VARCHAR(150) NOT NULL,
+        hutang DECIMAL(15,2) NOT NULL DEFAULT 0,
+        total DECIMAL(15,2) NOT NULL DEFAULT 0,
+        dead VARCHAR(120) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+      `,
+    )
   } finally {
     connection.release()
   }
@@ -417,165 +395,6 @@ app.delete('/api/users/:id', async (req, res) => {
   }
 })
 
-app.get('/api/suppliers', async (req, res) => {
-  try {
-    const search = String(req.query.search || '').trim()
-    const isActiveFilter = req.query.is_active
-    const { page, limit } = parsePagination(req.query)
-    const params = []
-    const whereParts = []
-
-    if (search) {
-      const searchValue = `%${search}%`
-      whereParts.push('(name LIKE ? OR phone LIKE ? OR address LIKE ?)')
-      params.push(searchValue, searchValue, searchValue)
-    }
-
-    if (isActiveFilter === '1' || isActiveFilter === '0') {
-      whereParts.push('is_active = ?')
-      params.push(Number(isActiveFilter))
-    }
-
-    const where = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : ''
-    const [countRows] = await pool.execute(`SELECT COUNT(*) AS total FROM suppliers ${where}`, params)
-    const meta = buildPaginationMeta(page, limit, Number(countRows[0]?.total || 0))
-
-    const [rows] = await pool.execute(
-      `
-      SELECT id, name, phone, address, notes, is_active, created_at, updated_at
-      FROM suppliers
-      ${where}
-      ORDER BY created_at DESC, id DESC
-      LIMIT ? OFFSET ?
-      `,
-      [...params, meta.limit, meta.offset],
-    )
-
-    res.json({
-      data: rows,
-      meta: {
-        page: meta.page,
-        limit: meta.limit,
-        total_items: meta.total_items,
-        total_pages: meta.total_pages,
-      },
-    })
-  } catch (error) {
-    res.status(500).json({ message: error.message })
-  }
-})
-
-app.post('/api/suppliers', async (req, res) => {
-  const connection = await pool.getConnection()
-  try {
-    const { name, phone, address, notes, is_active } = req.body
-    const normalizedName = String(name || '').trim()
-    if (!normalizedName) {
-      return res.status(400).json({ message: 'Nama supplier wajib diisi' })
-    }
-
-    await connection.beginTransaction()
-    const [existing] = await connection.execute('SELECT id FROM suppliers WHERE name = ?', [normalizedName])
-    if (existing.length) {
-      await connection.rollback()
-      return res.status(400).json({ message: 'Nama supplier sudah digunakan' })
-    }
-
-    const [insert] = await connection.execute(
-      `
-      INSERT INTO suppliers (name, phone, address, notes, is_active)
-      VALUES (?, ?, ?, ?, ?)
-      `,
-      [normalizedName, phone || null, address || null, notes || null, is_active === false ? 0 : 1],
-    )
-    await logActivity(connection, 'CREATE_SUPPLIER', `Menambahkan supplier ${normalizedName}`)
-    await connection.commit()
-    res.status(201).json({ id: insert.insertId, message: 'Supplier berhasil dibuat' })
-  } catch (error) {
-    await connection.rollback()
-    res.status(500).json({ message: error.message })
-  } finally {
-    connection.release()
-  }
-})
-
-app.put('/api/suppliers/:id', async (req, res) => {
-  const connection = await pool.getConnection()
-  try {
-    const { id } = req.params
-    const { name, phone, address, notes, is_active } = req.body
-    const normalizedName = String(name || '').trim()
-    if (!normalizedName) {
-      return res.status(400).json({ message: 'Nama supplier wajib diisi' })
-    }
-
-    await connection.beginTransaction()
-    const [rows] = await connection.execute('SELECT id, name FROM suppliers WHERE id = ?', [id])
-    if (!rows.length) {
-      await connection.rollback()
-      return res.status(404).json({ message: 'Supplier tidak ditemukan' })
-    }
-
-    const [duplicate] = await connection.execute('SELECT id FROM suppliers WHERE name = ? AND id <> ?', [normalizedName, id])
-    if (duplicate.length) {
-      await connection.rollback()
-      return res.status(400).json({ message: 'Nama supplier sudah digunakan supplier lain' })
-    }
-
-    const previousName = rows[0].name
-    await connection.execute(
-      `
-      UPDATE suppliers
-      SET name = ?, phone = ?, address = ?, notes = ?, is_active = ?
-      WHERE id = ?
-      `,
-      [normalizedName, phone || null, address || null, notes || null, is_active === false ? 0 : 1, id],
-    )
-
-    if (previousName !== normalizedName) {
-      await connection.execute('UPDATE products SET supplier = ? WHERE supplier = ?', [normalizedName, previousName])
-    }
-
-    await logActivity(connection, 'UPDATE_SUPPLIER', `Memperbarui supplier ${normalizedName}`)
-    await connection.commit()
-    res.json({ message: 'Supplier berhasil diperbarui' })
-  } catch (error) {
-    await connection.rollback()
-    res.status(500).json({ message: error.message })
-  } finally {
-    connection.release()
-  }
-})
-
-app.delete('/api/suppliers/:id', async (req, res) => {
-  const connection = await pool.getConnection()
-  try {
-    const { id } = req.params
-    await connection.beginTransaction()
-    const [rows] = await connection.execute('SELECT id, name FROM suppliers WHERE id = ?', [id])
-    if (!rows.length) {
-      await connection.rollback()
-      return res.status(404).json({ message: 'Supplier tidak ditemukan' })
-    }
-
-    const [usage] = await connection.execute('SELECT COUNT(*) AS total FROM products WHERE supplier = ?', [rows[0].name])
-    if (Number(usage[0]?.total || 0) > 0) {
-      await connection.rollback()
-      return res.status(400).json({ message: 'Supplier masih digunakan di produk dan tidak bisa dihapus' })
-    }
-
-    await connection.execute('DELETE FROM suppliers WHERE id = ?', [id])
-    await logActivity(connection, 'DELETE_SUPPLIER', `Menghapus supplier ${rows[0].name}`)
-    await connection.commit()
-    res.json({ message: 'Supplier berhasil dihapus' })
-  } catch (error) {
-    await connection.rollback()
-    res.status(500).json({ message: error.message })
-  } finally {
-    connection.release()
-  }
-})
-
 app.get('/api/products', async (req, res) => {
   try {
     const search = (req.query.search || '').trim()
@@ -584,23 +403,19 @@ app.get('/api/products', async (req, res) => {
     let where = ''
 
     if (search) {
-      where = 'WHERE p.code LIKE ? OR p.name LIKE ? OR p.category LIKE ? OR p.supplier LIKE ?'
+      where = 'WHERE code LIKE ? OR name LIKE ? OR category LIKE ?'
       const searchValue = `%${search}%`
-      params.push(searchValue, searchValue, searchValue, searchValue)
+      params.push(searchValue, searchValue, searchValue)
     }
 
-    const [countRows] = await pool.execute(
-      `SELECT COUNT(*) AS total FROM products p LEFT JOIN suppliers s ON s.name = p.supplier ${where}`,
-      params,
-    )
+    const [countRows] = await pool.execute(`SELECT COUNT(*) AS total FROM products ${where}`, params)
     const meta = buildPaginationMeta(page, limit, Number(countRows[0]?.total || 0))
     const [rows] = await pool.execute(
       `
-      SELECT p.*, s.id AS supplier_id
-      FROM products p
-      LEFT JOIN suppliers s ON s.name = p.supplier
+      SELECT *
+      FROM products
       ${where}
-      ORDER BY p.created_at DESC, p.id DESC
+      ORDER BY created_at DESC, id DESC
       LIMIT ? OFFSET ?
       `,
       [...params, meta.limit, meta.offset],
@@ -630,8 +445,6 @@ app.post('/api/products', async (req, res) => {
       min_stock,
       initial_stock,
       category,
-      supplier_id,
-      supplier,
     } = req.body
 
     if (!code || !name) {
@@ -639,11 +452,6 @@ app.post('/api/products', async (req, res) => {
     }
 
     await connection.beginTransaction()
-    const supplierResolved = await resolveSupplierName(connection, supplier_id, supplier)
-    if (supplierResolved.error) {
-      await connection.rollback()
-      return res.status(400).json({ message: supplierResolved.error })
-    }
 
     const [existing] = await connection.execute('SELECT id FROM products WHERE code = ?', [code])
     if (existing.length) {
@@ -654,8 +462,8 @@ app.post('/api/products', async (req, res) => {
     const [insert] = await connection.execute(
       `
         INSERT INTO products
-        (code, name, unit, min_stock, initial_stock, current_stock, purchase_price, selling_price, category, supplier)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (code, name, unit, min_stock, initial_stock, current_stock, purchase_price, selling_price, category)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         code,
@@ -667,7 +475,6 @@ app.post('/api/products', async (req, res) => {
         0,
         0,
         category || null,
-        supplierResolved.name,
       ],
     )
 
@@ -694,16 +501,9 @@ app.put('/api/products/:id', async (req, res) => {
       min_stock,
       initial_stock,
       category,
-      supplier_id,
-      supplier,
     } = req.body
 
     await connection.beginTransaction()
-    const supplierResolved = await resolveSupplierName(connection, supplier_id, supplier)
-    if (supplierResolved.error) {
-      await connection.rollback()
-      return res.status(400).json({ message: supplierResolved.error })
-    }
 
     const [exists] = await connection.execute('SELECT id FROM products WHERE id = ?', [id])
     if (!exists.length) {
@@ -721,7 +521,7 @@ app.put('/api/products/:id', async (req, res) => {
       `
         UPDATE products
         SET code = ?, name = ?, unit = ?, min_stock = ?, initial_stock = ?,
-            purchase_price = ?, selling_price = ?, category = ?, supplier = ?
+            purchase_price = ?, selling_price = ?, category = ?
         WHERE id = ?
       `,
       [
@@ -733,7 +533,6 @@ app.put('/api/products/:id', async (req, res) => {
         0,
         0,
         category || null,
-        supplierResolved.name,
         id,
       ],
     )
@@ -801,11 +600,6 @@ app.post('/api/products/bulk', async (req, res) => {
         skipped += 1
         continue
       }
-      const supplierResolved = await resolveSupplierName(connection, item.supplier_id, item.supplier)
-      if (supplierResolved.error) {
-        skipped += 1
-        continue
-      }
       const [exists] = await connection.execute('SELECT id FROM products WHERE code = ?', [item.code])
       if (exists.length) {
         skipped += 1
@@ -814,8 +608,8 @@ app.post('/api/products/bulk', async (req, res) => {
       await connection.execute(
         `
           INSERT INTO products
-          (code, name, unit, min_stock, initial_stock, current_stock, purchase_price, selling_price, category, supplier)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (code, name, unit, min_stock, initial_stock, current_stock, purchase_price, selling_price, category)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           item.code,
@@ -827,7 +621,6 @@ app.post('/api/products/bulk', async (req, res) => {
           0,
           0,
           item.category || null,
-          supplierResolved.name,
         ],
       )
       inserted += 1
@@ -1377,6 +1170,132 @@ app.get('/api/activity', async (req, res) => {
   }
 })
 
+app.get('/api/notes', async (req, res) => {
+  try {
+    const search = String(req.query.search || '').trim()
+    const { page, limit } = parsePagination(req.query)
+    const params = []
+    let where = ''
+    if (search) {
+      where = 'WHERE data_name LIKE ? OR dead LIKE ?'
+      const searchValue = `%${search}%`
+      params.push(searchValue, searchValue)
+    }
+
+    const [countRows] = await pool.execute(`SELECT COUNT(*) AS total FROM notes ${where}`, params)
+    const meta = buildPaginationMeta(page, limit, Number(countRows[0]?.total || 0))
+    const [rows] = await pool.execute(
+      `
+      SELECT id, data_name, hutang, total, dead, created_at, updated_at
+      FROM notes
+      ${where}
+      ORDER BY created_at DESC, id DESC
+      LIMIT ? OFFSET ?
+      `,
+      [...params, meta.limit, meta.offset],
+    )
+
+    res.json({
+      data: rows,
+      meta: {
+        page: meta.page,
+        limit: meta.limit,
+        total_items: meta.total_items,
+        total_pages: meta.total_pages,
+      },
+    })
+  } catch (error) {
+    res.status(500).json({ message: error.message })
+  }
+})
+
+app.post('/api/notes', async (req, res) => {
+  const connection = await pool.getConnection()
+  try {
+    const { data_name, hutang, total, dead } = req.body
+    const normalizedData = String(data_name || '').trim()
+    if (!normalizedData) {
+      return res.status(400).json({ message: 'Kolom data wajib diisi' })
+    }
+
+    await connection.beginTransaction()
+    const [insert] = await connection.execute(
+      `
+      INSERT INTO notes (data_name, hutang, total, dead)
+      VALUES (?, ?, ?, ?)
+      `,
+      [normalizedData, Number(hutang || 0), Number(total || 0), String(dead || '').trim() || null],
+    )
+    await logActivity(connection, 'CREATE_NOTE', `Menambahkan catatan ${normalizedData}`)
+    await connection.commit()
+    res.status(201).json({ id: insert.insertId, message: 'Catatan berhasil ditambahkan' })
+  } catch (error) {
+    await connection.rollback()
+    res.status(500).json({ message: error.message })
+  } finally {
+    connection.release()
+  }
+})
+
+app.put('/api/notes/:id', async (req, res) => {
+  const connection = await pool.getConnection()
+  try {
+    const { id } = req.params
+    const { data_name, hutang, total, dead } = req.body
+    const normalizedData = String(data_name || '').trim()
+    if (!normalizedData) {
+      return res.status(400).json({ message: 'Kolom data wajib diisi' })
+    }
+
+    await connection.beginTransaction()
+    const [rows] = await connection.execute('SELECT id FROM notes WHERE id = ?', [id])
+    if (!rows.length) {
+      await connection.rollback()
+      return res.status(404).json({ message: 'Catatan tidak ditemukan' })
+    }
+
+    await connection.execute(
+      `
+      UPDATE notes
+      SET data_name = ?, hutang = ?, total = ?, dead = ?
+      WHERE id = ?
+      `,
+      [normalizedData, Number(hutang || 0), Number(total || 0), String(dead || '').trim() || null, id],
+    )
+    await logActivity(connection, 'UPDATE_NOTE', `Memperbarui catatan ${normalizedData}`)
+    await connection.commit()
+    res.json({ message: 'Catatan berhasil diperbarui' })
+  } catch (error) {
+    await connection.rollback()
+    res.status(500).json({ message: error.message })
+  } finally {
+    connection.release()
+  }
+})
+
+app.delete('/api/notes/:id', async (req, res) => {
+  const connection = await pool.getConnection()
+  try {
+    const { id } = req.params
+    await connection.beginTransaction()
+    const [rows] = await connection.execute('SELECT id, data_name FROM notes WHERE id = ?', [id])
+    if (!rows.length) {
+      await connection.rollback()
+      return res.status(404).json({ message: 'Catatan tidak ditemukan' })
+    }
+
+    await connection.execute('DELETE FROM notes WHERE id = ?', [id])
+    await logActivity(connection, 'DELETE_NOTE', `Menghapus catatan ${rows[0].data_name}`)
+    await connection.commit()
+    res.json({ message: 'Catatan berhasil dihapus' })
+  } catch (error) {
+    await connection.rollback()
+    res.status(500).json({ message: error.message })
+  } finally {
+    connection.release()
+  }
+})
+
 app.get('/api/dashboard', async (_req, res) => {
   try {
     const [productStats] = await pool.execute(
@@ -1418,7 +1337,7 @@ app.get('/api/dashboard', async (_req, res) => {
 })
 
 const startServer = async () => {
-  await ensureSuppliersTable()
+  await ensureNotesTable()
   await ensureIncomingGoodsPriceColumns()
   await ensureDefaultAdmin()
   app.listen(port, () => {

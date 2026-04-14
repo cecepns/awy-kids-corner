@@ -23,18 +23,6 @@ CREATE TABLE IF NOT EXISTS products (
   purchase_price DECIMAL(15,2) NOT NULL DEFAULT 0,
   selling_price DECIMAL(15,2) NOT NULL DEFAULT 0,
   category VARCHAR(120) NULL,
-  supplier VARCHAR(120) NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS suppliers (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  name VARCHAR(150) NOT NULL UNIQUE,
-  phone VARCHAR(50) NULL,
-  address TEXT NULL,
-  notes TEXT NULL,
-  is_active TINYINT(1) NOT NULL DEFAULT 1,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
@@ -76,10 +64,20 @@ CREATE TABLE IF NOT EXISTS activity_logs (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS notes (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  data_name VARCHAR(150) NOT NULL,
+  hutang DECIMAL(15,2) NOT NULL DEFAULT 0,
+  total DECIMAL(15,2) NOT NULL DEFAULT 0,
+  dead VARCHAR(120) NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
 CREATE INDEX idx_products_code ON products(code);
 CREATE INDEX idx_products_name ON products(name);
-CREATE INDEX idx_suppliers_name ON suppliers(name);
 CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_incoming_product_date ON incoming_goods(product_id, transaction_date);
 CREATE INDEX idx_outgoing_product_date ON outgoing_goods(product_id, transaction_date);
 CREATE INDEX idx_activity_created_at ON activity_logs(created_at);
+CREATE INDEX idx_notes_created_at ON notes(created_at);

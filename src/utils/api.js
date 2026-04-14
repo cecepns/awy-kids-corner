@@ -27,11 +27,6 @@ export const apiService = {
   updateUser: (id, payload) => api.put(`/users/${id}`, payload),
   deleteUser: (id) => api.delete(`/users/${id}`),
 
-  getSuppliers: (params) => api.get('/suppliers', { params }),
-  createSupplier: (payload) => api.post('/suppliers', payload),
-  updateSupplier: (id, payload) => api.put(`/suppliers/${id}`, payload),
-  deleteSupplier: (id) => api.delete(`/suppliers/${id}`),
-
   getProducts: (params) => api.get('/products', { params }),
   getProductCost: (id) => api.get(`/products/${id}/cost`),
   createProduct: (payload) => api.post('/products', payload),
@@ -48,6 +43,11 @@ export const apiService = {
   createOutgoing: (payload) => api.post('/outgoing', payload),
   updateOutgoing: (id, payload) => api.put(`/outgoing/${id}`, payload),
   deleteOutgoing: (id) => api.delete(`/outgoing/${id}`),
+
+  getNotes: (params) => api.get('/notes', { params }),
+  createNote: (payload) => api.post('/notes', payload),
+  updateNote: (id, payload) => api.put(`/notes/${id}`, payload),
+  deleteNote: (id) => api.delete(`/notes/${id}`),
 
   getBookkeeping: (params) => api.get('/bookkeeping', { params }),
   updateBookkeeping: (payload) => api.post('/bookkeeping', payload),

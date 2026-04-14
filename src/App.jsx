@@ -6,9 +6,9 @@ import Sidebar from './components/Sidebar'
 import Topbar from './components/Topbar'
 import DashboardPage from './pages/DashboardPage'
 import ProductsPage from './pages/ProductsPage'
-import SuppliersPage from './pages/SuppliersPage'
 import IncomingPage from './pages/IncomingPage'
 import OutgoingPage from './pages/OutgoingPage'
+import NotesPage from './pages/NotesPage'
 import BookkeepingPage from './pages/BookkeepingPage'
 import ActivityPage from './pages/ActivityPage'
 import UsersPage from './pages/UsersPage'
@@ -19,9 +19,9 @@ import { notifyError, notifySuccess } from './utils/toast'
 const routeConfigs = [
   { key: 'dashboard', path: '/dashboard', element: <DashboardPage /> },
   { key: 'products', path: '/products', element: null },
-  { key: 'suppliers', path: '/suppliers', element: <SuppliersPage /> },
   { key: 'incoming', path: '/incoming', element: null },
   { key: 'outgoing', path: '/outgoing', element: null },
+  { key: 'notes', path: '/notes', element: <NotesPage /> },
   { key: 'bookkeeping', path: '/bookkeeping', element: null },
   { key: 'users', path: '/users', element: null },
   { key: 'activity', path: '/activity', element: <ActivityPage /> },
@@ -156,9 +156,9 @@ function App() {
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/products" element={<ProductsPage onChanged={loadProducts} />} />
-            <Route path="/suppliers" element={<SuppliersPage />} />
             <Route path="/incoming" element={<IncomingPage products={products} onChanged={loadProducts} />} />
             <Route path="/outgoing" element={<OutgoingPage products={products} onChanged={loadProducts} />} />
+            <Route path="/notes" element={<NotesPage />} />
             <Route path="/bookkeeping" element={<BookkeepingPage onChanged={loadProducts} />} />
             <Route path="/users" element={<UsersPage currentUser={currentUser} />} />
             <Route path="/activity" element={<ActivityPage />} />

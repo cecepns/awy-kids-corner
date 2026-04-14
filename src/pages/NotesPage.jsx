@@ -4,17 +4,16 @@ import Modal from '../components/Modal'
 import ApiPagination from '../components/ApiPagination'
 import { apiService } from '../utils/api'
 import { confirmToast, notifyError, notifySuccess } from '../utils/toast'
-import { formatDate } from '../utils/format'
+import { formatNumber } from '../utils/format'
 
 const initialForm = {
-  name: '',
-  phone: '',
-  address: '',
-  notes: '',
-  is_active: true,
+  data_name: '',
+  hutang: 0,
+  total: 0,
+  dead: '',
 }
 
-export default function SuppliersPage() {
+export default function NotesPage() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -29,7 +28,7 @@ export default function SuppliersPage() {
   const loadData = async () => {
     try {
       setLoading(true)
-      const { data } = await apiService.getSuppliers({ search, page, limit })
+      const { data } = await apiService.getNotes({ search, page, limit })
       setRows(data.data || [])
       setTotalPages(data.meta?.total_pages || 1)
       setTotalItems(data.meta?.total_items || 0)
@@ -37,7 +36,7 @@ export default function SuppliersPage() {
         setPage(data.meta.page)
       }
     } catch (error) {
-      notifyError(error.response?.data?.message || 'Gagal mengambil data supplier')
+      notifyError(error.response?.data?.message || 'Gagal mengambil data catatan')
     } finally {
       setLoading(false)
     }
@@ -47,39 +46,39 @@ export default function SuppliersPage() {
     loadData()
   }, [search, page, limit])
 
-  const reset = () => {
+  const resetForm = () => {
     setEditing(null)
     setForm(initialForm)
     setModalOpen(false)
   }
 
-  const submit = async (event) => {
+  const submitForm = async (event) => {
     event.preventDefault()
     try {
       if (editing) {
-        await apiService.updateSupplier(editing.id, form)
-        notifySuccess('Supplier berhasil diperbarui')
+        await apiService.updateNote(editing.id, form)
+        notifySuccess('Catatan berhasil diperbarui')
       } else {
-        await apiService.createSupplier(form)
-        notifySuccess('Supplier berhasil ditambahkan')
+        await apiService.createNote(form)
+        notifySuccess('Catatan berhasil ditambahkan')
       }
-      reset()
+      resetForm()
       await loadData()
     } catch (error) {
-      notifyError(error.response?.data?.message || 'Gagal menyimpan supplier')
+      notifyError(error.response?.data?.message || 'Gagal menyimpan catatan')
     }
   }
 
   const handleDelete = async (item) => {
-    const accepted = await confirmToast(`Hapus supplier ${item.name}?`, 'Ya, hapus')
+    const accepted = await confirmToast(`Hapus catatan ${item.data_name}?`, 'Ya, hapus')
     if (!accepted) return
 
     try {
-      await apiService.deleteSupplier(item.id)
-      notifySuccess('Supplier berhasil dihapus')
+      await apiService.deleteNote(item.id)
+      notifySuccess('Catatan berhasil dihapus')
       await loadData()
     } catch (error) {
-      notifyError(error.response?.data?.message || 'Gagal menghapus supplier')
+      notifyError(error.response?.data?.message || 'Gagal menghapus catatan')
     }
   }
 
@@ -89,7 +88,7 @@ export default function SuppliersPage() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <input
             className="input sm:w-80"
-            placeholder="Cari nama / telepon / alamat supplier..."
+            placeholder="Cari data / dead..."
             value={search}
             onChange={(event) => {
               setSearch(event.target.value)
@@ -105,50 +104,42 @@ export default function SuppliersPage() {
             }}
           >
             <Plus size={16} />
-            Tambah Supplier
+            Tambah Catatan
           </button>
         </div>
       </div>
 
       <div className="card overflow-x-auto">
         <table className="min-w-full text-sm">
-          <thead className="bg-cyan-700 text-white">
+          <thead className="bg-slate-700 text-white">
             <tr>
-              <th className="px-3 py-2 text-left">Nama Supplier</th>
-              <th className="px-3 py-2 text-left">Telepon</th>
-              <th className="px-3 py-2 text-left">Alamat</th>
-              <th className="px-3 py-2 text-left">Status</th>
-              <th className="px-3 py-2 text-left">Dibuat</th>
+              <th className="px-3 py-2 text-left">Data</th>
+              <th className="px-3 py-2 text-right">Hutang</th>
+              <th className="px-3 py-2 text-right">Total</th>
+              <th className="px-3 py-2 text-left">Dead</th>
               <th className="px-3 py-2 text-right">Aksi</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td className="px-3 py-4 text-center text-slate-500" colSpan={6}>
+                <td className="px-3 py-4 text-center text-slate-500" colSpan={5}>
                   Memuat data...
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td className="px-3 py-4 text-center text-slate-500" colSpan={6}>
-                  Data supplier belum ada.
+                <td className="px-3 py-4 text-center text-slate-500" colSpan={5}>
+                  Belum ada data catatan.
                 </td>
               </tr>
             ) : (
               rows.map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
-                  <td className="px-3 py-2 font-medium">{row.name}</td>
-                  <td className="px-3 py-2">{row.phone || '-'}</td>
-                  <td className="px-3 py-2">{row.address || '-'}</td>
-                  <td className="px-3 py-2">
-                    {row.is_active ? (
-                      <span className="rounded bg-emerald-100 px-2 py-1 text-xs text-emerald-700">Aktif</span>
-                    ) : (
-                      <span className="rounded bg-rose-100 px-2 py-1 text-xs text-rose-700">Nonaktif</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2">{formatDate(row.created_at)}</td>
+                  <td className="px-3 py-2">{row.data_name}</td>
+                  <td className="px-3 py-2 text-right">{formatNumber(row.hutang)}</td>
+                  <td className="px-3 py-2 text-right font-semibold">{formatNumber(row.total)}</td>
+                  <td className="px-3 py-2">{row.dead || '-'}</td>
                   <td className="px-3 py-2">
                     <div className="flex justify-end gap-2">
                       <button
@@ -156,11 +147,10 @@ export default function SuppliersPage() {
                         onClick={() => {
                           setEditing(row)
                           setForm({
-                            name: row.name || '',
-                            phone: row.phone || '',
-                            address: row.address || '',
-                            notes: row.notes || '',
-                            is_active: Boolean(row.is_active),
+                            data_name: row.data_name || '',
+                            hutang: Number(row.hutang || 0),
+                            total: Number(row.total || 0),
+                            dead: row.dead || '',
                           })
                           setModalOpen(true)
                         }}
@@ -194,57 +184,52 @@ export default function SuppliersPage() {
         />
       </div>
 
-      <Modal
-        title={editing ? 'Edit Supplier' : 'Tambah Supplier'}
-        isOpen={modalOpen}
-        onClose={reset}
-        maxWidth="max-w-lg"
-      >
-        <form className="space-y-3" onSubmit={submit}>
+      <Modal title={editing ? 'Edit Catatan' : 'Tambah Catatan'} isOpen={modalOpen} onClose={resetForm} maxWidth="max-w-lg">
+        <form className="space-y-3" onSubmit={submitForm}>
           <div>
-            <label className="mb-1 block text-xs text-slate-500">Nama Supplier</label>
+            <label className="mb-1 block text-xs text-slate-500">Data</label>
             <input
               className="input"
-              value={form.name}
-              onChange={(event) => setForm({ ...form, name: event.target.value })}
+              value={form.data_name}
+              onChange={(event) => setForm({ ...form, data_name: event.target.value })}
               required
             />
           </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">Hutang</label>
+              <input
+                type="number"
+                className="input"
+                min="0"
+                value={form.hutang}
+                onChange={(event) => setForm({ ...form, hutang: Number(event.target.value) })}
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">Total</label>
+              <input
+                type="number"
+                className="input"
+                min="0"
+                value={form.total}
+                onChange={(event) => setForm({ ...form, total: Number(event.target.value) })}
+                required
+              />
+            </div>
+          </div>
           <div>
-            <label className="mb-1 block text-xs text-slate-500">Telepon</label>
+            <label className="mb-1 block text-xs text-slate-500">Dead</label>
             <input
               className="input"
-              value={form.phone}
-              onChange={(event) => setForm({ ...form, phone: event.target.value })}
+              value={form.dead}
+              onChange={(event) => setForm({ ...form, dead: event.target.value })}
+              placeholder="Contoh: 14 Apr / lunas / follow up"
             />
           </div>
-          <div>
-            <label className="mb-1 block text-xs text-slate-500">Alamat</label>
-            <textarea
-              className="input min-h-20"
-              value={form.address}
-              onChange={(event) => setForm({ ...form, address: event.target.value })}
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-slate-500">Catatan</label>
-            <textarea
-              className="input min-h-20"
-              value={form.notes}
-              onChange={(event) => setForm({ ...form, notes: event.target.value })}
-            />
-          </div>
-          <label className="flex items-center gap-2 text-sm text-slate-700">
-            <input
-              type="checkbox"
-              checked={form.is_active}
-              onChange={(event) => setForm({ ...form, is_active: event.target.checked })}
-            />
-            Supplier aktif
-          </label>
-
           <div className="flex justify-end gap-2">
-            <button type="button" className="btn-secondary" onClick={reset}>
+            <button type="button" className="btn-secondary" onClick={resetForm}>
               Batal
             </button>
             <button className="btn-primary" type="submit">

@@ -3,9 +3,9 @@ import { Menu } from 'lucide-react'
 const titleMap = {
   dashboard: 'Dashboard',
   products: 'Data Produk',
-  suppliers: 'Manajemen Supplier',
   incoming: 'Barang Masuk',
   outgoing: 'Barang Keluar',
+  notes: 'Catatan',
   bookkeeping: 'Pembukuan',
   users: 'Manajemen Users',
   activity: 'Activity',

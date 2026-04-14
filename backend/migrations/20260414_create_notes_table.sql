@@ -1,0 +1,18 @@
+-- Migration: create notes table
+-- Date: 2026-04-14
+--
+-- UP
+CREATE TABLE IF NOT EXISTS notes (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  data_name VARCHAR(150) NOT NULL,
+  hutang DECIMAL(15,2) NOT NULL DEFAULT 0,
+  total DECIMAL(15,2) NOT NULL DEFAULT 0,
+  dead VARCHAR(120) NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_notes_created_at ON notes(created_at);
+
+-- DOWN
+DROP TABLE IF EXISTS notes;

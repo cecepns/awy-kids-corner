@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import Select from 'react-select'
 import { Plus, Pencil, Trash2, Upload } from 'lucide-react'
 import { apiService } from '../utils/api'
 import Modal from '../components/Modal'
@@ -12,7 +11,6 @@ const initialForm = {
   name: '',
   initial_stock: 0,
   category: '',
-  supplier_id: '',
 }
 
 const createBulkRow = () => ({
@@ -20,14 +18,11 @@ const createBulkRow = () => ({
   name: '',
   initial_stock: 0,
   category: '',
-  supplier_id: '',
 })
 
 export default function ProductsPage({ onChanged }) {
   const [products, setProducts] = useState([])
-  const [suppliers, setSuppliers] = useState([])
   const [loading, setLoading] = useState(true)
-  const [loadingSuppliers, setLoadingSuppliers] = useState(true)
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(20)
@@ -38,41 +33,6 @@ export default function ProductsPage({ onChanged }) {
   const [editing, setEditing] = useState(null)
   const [bulkRows, setBulkRows] = useState([createBulkRow()])
   const [form, setForm] = useState(initialForm)
-
-  const supplierOptions = useMemo(
-    () => suppliers.map((supplier) => ({ value: supplier.id, label: supplier.name })),
-    [suppliers],
-  )
-
-  const supplierByName = useMemo(() => {
-    const map = new Map()
-    suppliers.forEach((supplier) => {
-      map.set(supplier.name, supplier.id)
-    })
-    return map
-  }, [suppliers])
-
-  const loadSuppliers = async () => {
-    try {
-      setLoadingSuppliers(true)
-      const allSuppliers = []
-      let nextPage = 1
-      let totalPagesSupplier = 1
-
-      while (nextPage <= totalPagesSupplier) {
-        const { data } = await apiService.getSuppliers({ page: nextPage, limit: 100, is_active: 1 })
-        allSuppliers.push(...(data.data || []))
-        totalPagesSupplier = data.meta?.total_pages || 1
-        nextPage += 1
-      }
-
-      setSuppliers(allSuppliers)
-    } catch (error) {
-      notifyError(error.response?.data?.message || 'Gagal mengambil data supplier')
-    } finally {
-      setLoadingSuppliers(false)
-    }
-  }
 
   const loadProducts = async () => {
     try {
@@ -95,10 +55,6 @@ export default function ProductsPage({ onChanged }) {
     loadProducts()
   }, [search, page, limit])
 
-  useEffect(() => {
-    loadSuppliers()
-  }, [])
-
   const resetForm = () => {
     setForm(initialForm)
     setEditing(null)
@@ -112,7 +68,6 @@ export default function ProductsPage({ onChanged }) {
       name: item.name,
       initial_stock: item.initial_stock,
       category: item.category,
-      supplier_id: item.supplier_id || supplierByName.get(item.supplier) || '',
     })
     setModalOpen(true)
   }
@@ -121,16 +76,10 @@ export default function ProductsPage({ onChanged }) {
     event.preventDefault()
     try {
       if (editing) {
-        await apiService.updateProduct(editing.id, {
-          ...form,
-          supplier_id: form.supplier_id ? Number(form.supplier_id) : null,
-        })
+        await apiService.updateProduct(editing.id, form)
         notifySuccess('Produk berhasil diperbarui')
       } else {
-        await apiService.createProduct({
-          ...form,
-          supplier_id: form.supplier_id ? Number(form.supplier_id) : null,
-        })
+        await apiService.createProduct(form)
         notifySuccess('Produk berhasil ditambahkan')
       }
       resetForm()
@@ -163,12 +112,7 @@ export default function ProductsPage({ onChanged }) {
     }
 
     try {
-      await apiService.bulkInsertProducts({
-        products: filledRows.map((row) => ({
-          ...row,
-          supplier_id: row.supplier_id ? Number(row.supplier_id) : null,
-        })),
-      })
+      await apiService.bulkInsertProducts({ products: filledRows })
       notifySuccess(`Bulk insert berhasil (${filledRows.length} data)`)
       setBulkOpen(false)
       setBulkRows([createBulkRow()])
@@ -232,20 +176,19 @@ export default function ProductsPage({ onChanged }) {
               <th className="px-3 py-2 text-right">Stok Awal</th>
               <th className="px-3 py-2 text-right">Stok Saat Ini</th>
               <th className="px-3 py-2 text-left">Kategori</th>
-              <th className="px-3 py-2 text-left">Supplier</th>
               <th className="px-3 py-2 text-right">Aksi</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td className="px-3 py-4 text-center text-slate-500" colSpan={7}>
+                <td className="px-3 py-4 text-center text-slate-500" colSpan={6}>
                   Memuat data...
                 </td>
               </tr>
             ) : products.length === 0 ? (
               <tr>
-                <td className="px-3 py-4 text-center text-slate-500" colSpan={7}>
+                <td className="px-3 py-4 text-center text-slate-500" colSpan={6}>
                   Data produk belum ada.
                 </td>
               </tr>
@@ -257,7 +200,6 @@ export default function ProductsPage({ onChanged }) {
                   <td className="px-3 py-2 text-right">{formatNumber(item.initial_stock)}</td>
                   <td className="px-3 py-2 text-right font-semibold">{formatNumber(item.current_stock)}</td>
                   <td className="px-3 py-2">{item.category || '-'}</td>
-                  <td className="px-3 py-2">{item.supplier || '-'}</td>
                   <td className="px-3 py-2">
                     <div className="flex justify-end gap-2">
                       <button className="rounded p-1 text-sky-700 hover:bg-sky-50" onClick={() => openEdit(item)}>
@@ -327,18 +269,6 @@ export default function ProductsPage({ onChanged }) {
               className="input"
               value={form.category}
               onChange={(event) => setForm({ ...form, category: event.target.value })}
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-slate-500">Supplier</label>
-            <Select
-              classNamePrefix="react-select"
-              isClearable
-              isLoading={loadingSuppliers}
-              options={supplierOptions}
-              value={supplierOptions.find((option) => Number(option.value) === Number(form.supplier_id)) || null}
-              onChange={(selected) => setForm({ ...form, supplier_id: selected?.value || '' })}
-              placeholder="Pilih supplier..."
             />
           </div>
           <div>
@@ -443,24 +373,6 @@ export default function ProductsPage({ onChanged }) {
                         ),
                       )
                     }
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs text-slate-500">Supplier</label>
-                  <Select
-                    classNamePrefix="react-select"
-                    isClearable
-                    isLoading={loadingSuppliers}
-                    options={supplierOptions}
-                    value={supplierOptions.find((option) => Number(option.value) === Number(row.supplier_id)) || null}
-                    onChange={(selected) =>
-                      setBulkRows((prev) =>
-                        prev.map((item, rowIndex) =>
-                          rowIndex === index ? { ...item, supplier_id: selected?.value || '' } : item,
-                        ),
-                      )
-                    }
-                    placeholder="Pilih supplier..."
                   />
                 </div>
               </div>
