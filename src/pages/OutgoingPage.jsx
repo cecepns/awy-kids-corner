@@ -18,9 +18,33 @@ const initialForm = {
 
 const buildProductOption = (item) => ({
   value: item.id,
-  label: `${item.code} - ${item.name} (stok: ${formatNumber(item.current_stock || 0)})`,
+  label: `${item.code} - ${item.name}`,
   stock: Number(item.current_stock || 0),
+  minStock: Number(item.min_stock || 10),
 })
+
+const getStockMeta = (option) => {
+  const stock = Number(option?.stock || 0)
+  const minStock = Math.max(1, Number(option?.minStock || 10))
+
+  if (stock <= 0) {
+    return { text: 'Stok habis', color: '#ef4444' }
+  }
+  if (stock <= minStock) {
+    return { text: `Stok: ${formatNumber(stock)}`, color: '#f59e0b' }
+  }
+  return { text: `Stok: ${formatNumber(stock)}`, color: '#10b981' }
+}
+
+const formatProductOptionLabel = (option) => {
+  const stockMeta = getStockMeta(option)
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span>{option.label}</span>
+      <span style={{ color: stockMeta.color, fontWeight: 600 }}>{stockMeta.text}</span>
+    </div>
+  )
+}
 
 export default function OutgoingPage({ products, onChanged }) {
   const [rows, setRows] = useState([])
@@ -125,12 +149,18 @@ export default function OutgoingPage({ products, onChanged }) {
       notifyError('Produk wajib dipilih')
       return
     }
+    const quantityValue = Number(form.quantity)
+    if (!Number.isFinite(quantityValue) || quantityValue <= 0) {
+      notifyError('Jumlah harus lebih dari 0')
+      return
+    }
     try {
+      const payload = { ...form, quantity: quantityValue }
       if (editing) {
-        await apiService.updateOutgoing(editing.id, form)
+        await apiService.updateOutgoing(editing.id, payload)
         notifySuccess('Data barang keluar berhasil diperbarui')
       } else {
-        await apiService.createOutgoing(form)
+        await apiService.createOutgoing(payload)
         notifySuccess('Barang keluar berhasil ditambahkan')
       }
       resetForm()
@@ -262,6 +292,7 @@ export default function OutgoingPage({ products, onChanged }) {
                                   value: row.product_id,
                                   label: `${row.product_code} - ${row.product_name}`,
                                   stock: 0,
+                                  minStock: 10,
                                 },
                           )
                           setModalOpen(true)
@@ -314,6 +345,7 @@ export default function OutgoingPage({ products, onChanged }) {
                 setSelectedProduct(option || null)
                 setForm({ ...form, product_id: option?.value || '' })
               }}
+              formatOptionLabel={formatProductOptionLabel}
               noOptionsMessage={() => 'Produk tidak ditemukan'}
             />
             {selectedProduct ? (
@@ -338,7 +370,12 @@ export default function OutgoingPage({ products, onChanged }) {
                 className="input"
                 min="1"
                 value={form.quantity}
-                onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    quantity: event.target.value === '' ? '' : Number(event.target.value),
+                  })
+                }
                 required
               />
             </div>
