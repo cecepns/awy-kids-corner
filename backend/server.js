@@ -76,7 +76,26 @@ const getProductById = async (connection, productId) => {
   return rows[0]
 }
 
+const hasColumn = async (connection, tableName, columnName) => {
+  const [rows] = await connection.execute(
+    `
+    SELECT COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = ?
+      AND COLUMN_NAME = ?
+    `,
+    [tableName, columnName],
+  )
+  return rows.length > 0
+}
+
 const getProductAveragePurchasePrice = async (connection, productId) => {
+  const product = await getProductById(connection, productId)
+  const fallbackPrice = Number(product?.purchase_price || 0)
+  const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
+  if (!hasIncomingPurchasePrice) return fallbackPrice
+
   const [rows] = await connection.execute(
     `
     SELECT
@@ -90,7 +109,7 @@ const getProductAveragePurchasePrice = async (connection, productId) => {
 
   const totalQty = Number(rows[0]?.total_qty || 0)
   const totalCost = Number(rows[0]?.total_cost || 0)
-  if (totalQty <= 0) return 0
+  if (totalQty <= 0 || totalCost <= 0) return fallbackPrice
   return totalCost / totalQty
 }
 
@@ -155,23 +174,35 @@ const ensureDefaultAdmin = async () => {
   }
 }
 
-const ensureIncomingGoodsPriceColumns = async () => {
+const ensurePurchasePriceColumns = async () => {
   const connection = await pool.getConnection()
   try {
-    const [columns] = await connection.execute(
-      `
-      SELECT COLUMN_NAME
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_SCHEMA = DATABASE()
-        AND TABLE_NAME = 'incoming_goods'
-        AND COLUMN_NAME = 'purchase_price'
-      `,
-    )
-    if (!columns.length) {
+    const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
+    if (!hasIncomingPurchasePrice) {
       await connection.execute(
         `
         ALTER TABLE incoming_goods
         ADD COLUMN purchase_price DECIMAL(15,2) NOT NULL DEFAULT 0 AFTER quantity
+        `,
+      )
+    }
+
+    const hasProductsPurchasePrice = await hasColumn(connection, 'products', 'purchase_price')
+    if (!hasProductsPurchasePrice) {
+      await connection.execute(
+        `
+        ALTER TABLE products
+        ADD COLUMN purchase_price DECIMAL(15,2) NOT NULL DEFAULT 0 AFTER current_stock
+        `,
+      )
+    }
+
+    const hasOutgoingPurchasePrice = await hasColumn(connection, 'outgoing_goods', 'purchase_price')
+    if (!hasOutgoingPurchasePrice) {
+      await connection.execute(
+        `
+        ALTER TABLE outgoing_goods
+        ADD COLUMN purchase_price DECIMAL(15,2) NOT NULL DEFAULT 0 AFTER transaction_date
         `,
       )
     }
@@ -657,19 +688,32 @@ app.get('/api/products/:id/cost', async (req, res) => {
       return res.status(404).json({ message: 'Produk tidak ditemukan' })
     }
 
-    const [summaryRows] = await connection.execute(
-      `
-      SELECT
-        COALESCE(SUM(quantity), 0) AS total_qty,
-        COALESCE(SUM(quantity * purchase_price), 0) AS total_cost
-      FROM incoming_goods
-      WHERE product_id = ?
-      `,
-      [id],
-    )
+    const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
+    const [summaryRows] = hasIncomingPurchasePrice
+      ? await connection.execute(
+          `
+          SELECT
+            COALESCE(SUM(quantity), 0) AS total_qty,
+            COALESCE(SUM(quantity * purchase_price), 0) AS total_cost
+          FROM incoming_goods
+          WHERE product_id = ?
+          `,
+          [id],
+        )
+      : await connection.execute(
+          `
+          SELECT
+            COALESCE(SUM(quantity), 0) AS total_qty,
+            0 AS total_cost
+          FROM incoming_goods
+          WHERE product_id = ?
+          `,
+          [id],
+        )
     const totalQty = Number(summaryRows[0]?.total_qty || 0)
     const totalCost = Number(summaryRows[0]?.total_cost || 0)
-    const averagePurchasePrice = totalQty > 0 ? totalCost / totalQty : 0
+    const fallbackPrice = Number(product.purchase_price || 0)
+    const averagePurchasePrice = totalQty > 0 && totalCost > 0 ? totalCost / totalQty : fallbackPrice
 
     res.json({
       product_id: Number(id),
@@ -1346,7 +1390,7 @@ app.get('/api/dashboard', async (_req, res) => {
 
 const startServer = async () => {
   await ensureNotesTable()
-  await ensureIncomingGoodsPriceColumns()
+  await ensurePurchasePriceColumns()
   await ensureDefaultAdmin()
   app.listen(port, () => {
     // eslint-disable-next-line no-console
