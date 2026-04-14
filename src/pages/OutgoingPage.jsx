@@ -317,7 +317,7 @@ export default function OutgoingPage({ products, onChanged }) {
                 className="input"
                 min="0"
                 value={form.selling_price}
-                onChange={(event) => setForm({ ...form, selling_price: Number(event.target.value) })}
+                onChange={(event) => setForm({ ...form, selling_price: event.target.value })}
                 required
               />
             </div>
