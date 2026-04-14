@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
+import AsyncSelect from 'react-select/async'
 import { apiService } from '../utils/api'
 import Modal from '../components/Modal'
 import ApiPagination from '../components/ApiPagination'
@@ -15,6 +16,12 @@ const initialForm = {
   transaction_date: new Date().toISOString().slice(0, 10),
 }
 
+const buildProductOption = (item) => ({
+  value: item.id,
+  label: `${item.code} - ${item.name} (stok: ${formatNumber(item.current_stock || 0)})`,
+  stock: Number(item.current_stock || 0),
+})
+
 export default function OutgoingPage({ products, onChanged }) {
   const [rows, setRows] = useState([])
   const [search, setSearch] = useState('')
@@ -26,8 +33,13 @@ export default function OutgoingPage({ products, onChanged }) {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState(initialForm)
+  const [selectedProduct, setSelectedProduct] = useState(null)
   const [costPreview, setCostPreview] = useState({ average_purchase_price: 0 })
   const [loadingCostPreview, setLoadingCostPreview] = useState(false)
+  const defaultProductOptions = useMemo(
+    () => products.slice(0, 20).map(buildProductOption),
+    [products],
+  )
 
   const summary = useMemo(
     () =>
@@ -66,8 +78,22 @@ export default function OutgoingPage({ products, onChanged }) {
   const resetForm = () => {
     setEditing(null)
     setForm(initialForm)
+    setSelectedProduct(null)
     setCostPreview({ average_purchase_price: 0 })
     setModalOpen(false)
+  }
+
+  const loadProductOptions = async (inputValue) => {
+    try {
+      const { data } = await apiService.getProducts({
+        search: inputValue || '',
+        page: 1,
+        limit: 20,
+      })
+      return (data.data || []).map(buildProductOption)
+    } catch {
+      return []
+    }
   }
 
   const loadCostPreview = async (productId) => {
@@ -95,6 +121,10 @@ export default function OutgoingPage({ products, onChanged }) {
 
   const submitForm = async (event) => {
     event.preventDefault()
+    if (!form.product_id) {
+      notifyError('Produk wajib dipilih')
+      return
+    }
     try {
       if (editing) {
         await apiService.updateOutgoing(editing.id, form)
@@ -143,6 +173,7 @@ export default function OutgoingPage({ products, onChanged }) {
             onClick={() => {
               setEditing(null)
               setForm(initialForm)
+              setSelectedProduct(null)
               setCostPreview({ average_purchase_price: 0 })
               setModalOpen(true)
             }}
@@ -215,6 +246,7 @@ export default function OutgoingPage({ products, onChanged }) {
                         className="rounded p-1 text-sky-700 hover:bg-sky-50"
                         onClick={() => {
                           setEditing(row)
+                          const matchedProduct = products.find((item) => Number(item.id) === Number(row.product_id))
                           setForm({
                             product_id: row.product_id,
                             quantity: row.quantity,
@@ -223,6 +255,15 @@ export default function OutgoingPage({ products, onChanged }) {
                             notes: row.notes || '',
                             transaction_date: row.transaction_date?.slice(0, 10),
                           })
+                          setSelectedProduct(
+                            matchedProduct
+                              ? buildProductOption(matchedProduct)
+                              : {
+                                  value: row.product_id,
+                                  label: `${row.product_code} - ${row.product_name}`,
+                                  stock: 0,
+                                },
+                          )
                           setModalOpen(true)
                         }}
                       >
@@ -263,19 +304,21 @@ export default function OutgoingPage({ products, onChanged }) {
         <form className="space-y-3" onSubmit={submitForm}>
           <div>
             <label className="mb-1 block text-xs text-slate-500">Produk</label>
-            <select
-              className="input"
-              value={form.product_id}
-              onChange={(event) => setForm({ ...form, product_id: event.target.value })}
-              required
-            >
-              <option value="">Pilih produk</option>
-              {products.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.code} - {item.name} (stok: {item.current_stock})
-                </option>
-              ))}
-            </select>
+            <AsyncSelect
+              cacheOptions
+              defaultOptions={defaultProductOptions}
+              loadOptions={loadProductOptions}
+              placeholder="Cari produk..."
+              value={selectedProduct}
+              onChange={(option) => {
+                setSelectedProduct(option || null)
+                setForm({ ...form, product_id: option?.value || '' })
+              }}
+              noOptionsMessage={() => 'Produk tidak ditemukan'}
+            />
+            {selectedProduct ? (
+              <p className="mt-1 text-xs text-slate-500">Stok saat ini: {formatNumber(selectedProduct.stock)}</p>
+            ) : null}
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
