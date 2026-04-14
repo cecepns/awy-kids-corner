@@ -76,6 +76,24 @@ const getProductById = async (connection, productId) => {
   return rows[0]
 }
 
+const getProductAveragePurchasePrice = async (connection, productId) => {
+  const [rows] = await connection.execute(
+    `
+    SELECT
+      COALESCE(SUM(quantity), 0) AS total_qty,
+      COALESCE(SUM(quantity * purchase_price), 0) AS total_cost
+    FROM incoming_goods
+    WHERE product_id = ?
+    `,
+    [productId],
+  )
+
+  const totalQty = Number(rows[0]?.total_qty || 0)
+  const totalCost = Number(rows[0]?.total_cost || 0)
+  if (totalQty <= 0) return 0
+  return totalCost / totalQty
+}
+
 const getSupplierNameById = async (connection, supplierId) => {
   const [rows] = await connection.execute('SELECT id, name, is_active FROM suppliers WHERE id = ?', [supplierId])
   return rows[0]
@@ -175,6 +193,31 @@ const ensureSuppliersTable = async () => {
       )
       `,
     )
+  } finally {
+    connection.release()
+  }
+}
+
+const ensureIncomingGoodsPriceColumns = async () => {
+  const connection = await pool.getConnection()
+  try {
+    const [columns] = await connection.execute(
+      `
+      SELECT COLUMN_NAME
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'incoming_goods'
+        AND COLUMN_NAME = 'purchase_price'
+      `,
+    )
+    if (!columns.length) {
+      await connection.execute(
+        `
+        ALTER TABLE incoming_goods
+        ADD COLUMN purchase_price DECIMAL(15,2) NOT NULL DEFAULT 0 AFTER quantity
+        `,
+      )
+    }
   } finally {
     connection.release()
   }
@@ -586,8 +629,6 @@ app.post('/api/products', async (req, res) => {
       unit,
       min_stock,
       initial_stock,
-      purchase_price,
-      selling_price,
       category,
       supplier_id,
       supplier,
@@ -623,8 +664,8 @@ app.post('/api/products', async (req, res) => {
         Number(min_stock || 0),
         Number(initial_stock || 0),
         Number(initial_stock || 0),
-        Number(purchase_price || 0),
-        Number(selling_price || 0),
+        0,
+        0,
         category || null,
         supplierResolved.name,
       ],
@@ -652,8 +693,6 @@ app.put('/api/products/:id', async (req, res) => {
       unit,
       min_stock,
       initial_stock,
-      purchase_price,
-      selling_price,
       category,
       supplier_id,
       supplier,
@@ -691,8 +730,8 @@ app.put('/api/products/:id', async (req, res) => {
         unit || 'buah',
         Number(min_stock || 0),
         Number(initial_stock || 0),
-        Number(purchase_price || 0),
-        Number(selling_price || 0),
+        0,
+        0,
         category || null,
         supplierResolved.name,
         id,
@@ -785,8 +824,8 @@ app.post('/api/products/bulk', async (req, res) => {
           Number(item.min_stock || 0),
           Number(item.initial_stock || 0),
           Number(item.initial_stock || 0),
-          Number(item.purchase_price || 0),
-          Number(item.selling_price || 0),
+          0,
+          0,
           item.category || null,
           supplierResolved.name,
         ],
@@ -800,6 +839,42 @@ app.post('/api/products/bulk', async (req, res) => {
     res.status(201).json({ inserted, skipped, message: 'Bulk insert selesai' })
   } catch (error) {
     await connection.rollback()
+    res.status(500).json({ message: error.message })
+  } finally {
+    connection.release()
+  }
+})
+
+app.get('/api/products/:id/cost', async (req, res) => {
+  const connection = await pool.getConnection()
+  try {
+    const { id } = req.params
+    const product = await getProductById(connection, id)
+    if (!product) {
+      return res.status(404).json({ message: 'Produk tidak ditemukan' })
+    }
+
+    const [summaryRows] = await connection.execute(
+      `
+      SELECT
+        COALESCE(SUM(quantity), 0) AS total_qty,
+        COALESCE(SUM(quantity * purchase_price), 0) AS total_cost
+      FROM incoming_goods
+      WHERE product_id = ?
+      `,
+      [id],
+    )
+    const totalQty = Number(summaryRows[0]?.total_qty || 0)
+    const totalCost = Number(summaryRows[0]?.total_cost || 0)
+    const averagePurchasePrice = totalQty > 0 ? totalCost / totalQty : 0
+
+    res.json({
+      product_id: Number(id),
+      average_purchase_price: averagePurchasePrice,
+      total_incoming_qty: totalQty,
+      total_incoming_cost: totalCost,
+    })
+  } catch (error) {
     res.status(500).json({ message: error.message })
   } finally {
     connection.release()
@@ -841,7 +916,10 @@ app.get('/api/incoming', async (req, res) => {
       [...params, meta.limit, meta.offset],
     )
     res.json({
-      data: rows,
+      data: rows.map((row) => ({
+        ...row,
+        total_purchase: Number(row.quantity || 0) * Number(row.purchase_price || 0),
+      })),
       meta: {
         page: meta.page,
         limit: meta.limit,
@@ -857,9 +935,9 @@ app.get('/api/incoming', async (req, res) => {
 app.post('/api/incoming', async (req, res) => {
   const connection = await pool.getConnection()
   try {
-    const { product_id, quantity, reference_no, notes, transaction_date } = req.body
-    if (!product_id || Number(quantity) <= 0) {
-      return res.status(400).json({ message: 'Produk dan quantity wajib valid' })
+    const { product_id, quantity, purchase_price, reference_no, notes, transaction_date } = req.body
+    if (!product_id || Number(quantity) <= 0 || Number(purchase_price) < 0) {
+      return res.status(400).json({ message: 'Produk, quantity, dan harga beli wajib valid' })
     }
 
     await connection.beginTransaction()
@@ -871,10 +949,10 @@ app.post('/api/incoming', async (req, res) => {
 
     await connection.execute(
       `
-      INSERT INTO incoming_goods (product_id, quantity, reference_no, notes, transaction_date)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO incoming_goods (product_id, quantity, purchase_price, reference_no, notes, transaction_date)
+      VALUES (?, ?, ?, ?, ?, ?)
       `,
-      [product_id, Number(quantity), reference_no || null, notes || null, transaction_date],
+      [product_id, Number(quantity), Number(purchase_price || 0), reference_no || null, notes || null, transaction_date],
     )
 
     await recalculateStockByProductId(connection, product_id)
@@ -894,7 +972,7 @@ app.put('/api/incoming/:id', async (req, res) => {
   const connection = await pool.getConnection()
   try {
     const { id } = req.params
-    const { product_id, quantity, reference_no, notes, transaction_date } = req.body
+    const { product_id, quantity, purchase_price, reference_no, notes, transaction_date } = req.body
 
     await connection.beginTransaction()
     const [oldRows] = await connection.execute('SELECT * FROM incoming_goods WHERE id = ?', [id])
@@ -909,14 +987,18 @@ app.put('/api/incoming/:id', async (req, res) => {
       await connection.rollback()
       return res.status(404).json({ message: 'Produk tidak ditemukan' })
     }
+    if (Number(quantity) <= 0 || Number(purchase_price) < 0) {
+      await connection.rollback()
+      return res.status(400).json({ message: 'Quantity dan harga beli wajib valid' })
+    }
 
     await connection.execute(
       `
       UPDATE incoming_goods
-      SET product_id = ?, quantity = ?, reference_no = ?, notes = ?, transaction_date = ?
+      SET product_id = ?, quantity = ?, purchase_price = ?, reference_no = ?, notes = ?, transaction_date = ?
       WHERE id = ?
       `,
-      [product_id, Number(quantity), reference_no || null, notes || null, transaction_date, id],
+      [product_id, Number(quantity), Number(purchase_price || 0), reference_no || null, notes || null, transaction_date, id],
     )
 
     await recalculateStockByProductId(connection, old.product_id)
@@ -1005,7 +1087,11 @@ app.get('/api/outgoing', async (req, res) => {
       [...params, meta.limit, meta.offset],
     )
     res.json({
-      data: rows,
+      data: rows.map((row) => ({
+        ...row,
+        total_purchase: Number(row.purchase_price || 0) * Number(row.quantity || 0),
+        total_selling: Number(row.selling_price || 0) * Number(row.quantity || 0),
+      })),
       meta: {
         page: meta.page,
         limit: meta.limit,
@@ -1021,9 +1107,9 @@ app.get('/api/outgoing', async (req, res) => {
 app.post('/api/outgoing', async (req, res) => {
   const connection = await pool.getConnection()
   try {
-    const { product_id, quantity, reference_no, notes, transaction_date } = req.body
-    if (!product_id || Number(quantity) <= 0) {
-      return res.status(400).json({ message: 'Produk dan quantity wajib valid' })
+    const { product_id, quantity, selling_price, reference_no, notes, transaction_date } = req.body
+    if (!product_id || Number(quantity) <= 0 || Number(selling_price) < 0) {
+      return res.status(400).json({ message: 'Produk, quantity, dan harga jual wajib valid' })
     }
 
     await connection.beginTransaction()
@@ -1038,6 +1124,8 @@ app.post('/api/outgoing', async (req, res) => {
       return res.status(400).json({ message: `Stok ${product.name} tidak cukup` })
     }
 
+    const averagePurchasePrice = await getProductAveragePurchasePrice(connection, product_id)
+
     await connection.execute(
       `
       INSERT INTO outgoing_goods
@@ -1050,8 +1138,8 @@ app.post('/api/outgoing', async (req, res) => {
         reference_no || null,
         notes || null,
         transaction_date,
-        Number(product.purchase_price || 0),
-        Number(product.selling_price || 0),
+        Number(averagePurchasePrice || 0),
+        Number(selling_price || 0),
         0,
       ],
     )
@@ -1073,7 +1161,7 @@ app.put('/api/outgoing/:id', async (req, res) => {
   const connection = await pool.getConnection()
   try {
     const { id } = req.params
-    const { product_id, quantity, reference_no, notes, transaction_date } = req.body
+    const { product_id, quantity, selling_price, reference_no, notes, transaction_date } = req.body
     await connection.beginTransaction()
 
     const [oldRows] = await connection.execute('SELECT * FROM outgoing_goods WHERE id = ?', [id])
@@ -1099,14 +1187,29 @@ app.put('/api/outgoing/:id', async (req, res) => {
       await connection.rollback()
       return res.status(400).json({ message: 'Stok produk tujuan tidak cukup' })
     }
+    if (Number(selling_price) < 0 || Number(quantity) <= 0) {
+      await connection.rollback()
+      return res.status(400).json({ message: 'Quantity dan harga jual wajib valid' })
+    }
+
+    const averagePurchasePrice = await getProductAveragePurchasePrice(connection, product_id)
 
     await connection.execute(
       `
       UPDATE outgoing_goods
-      SET product_id = ?, quantity = ?, reference_no = ?, notes = ?, transaction_date = ?
+      SET product_id = ?, quantity = ?, reference_no = ?, notes = ?, transaction_date = ?, purchase_price = ?, selling_price = ?
       WHERE id = ?
       `,
-      [product_id, Number(quantity), reference_no || null, notes || null, transaction_date, id],
+      [
+        product_id,
+        Number(quantity),
+        reference_no || null,
+        notes || null,
+        transaction_date,
+        Number(averagePurchasePrice || 0),
+        Number(selling_price || 0),
+        id,
+      ],
     )
 
     await recalculateStockByProductId(connection, old.product_id)
@@ -1316,6 +1419,7 @@ app.get('/api/dashboard', async (_req, res) => {
 
 const startServer = async () => {
   await ensureSuppliersTable()
+  await ensureIncomingGoodsPriceColumns()
   await ensureDefaultAdmin()
   app.listen(port, () => {
     // eslint-disable-next-line no-console

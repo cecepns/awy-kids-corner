@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS incoming_goods (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   product_id BIGINT NOT NULL,
   quantity INT NOT NULL,
+  purchase_price DECIMAL(15,2) NOT NULL DEFAULT 0,
   reference_no VARCHAR(120) NULL,
   notes TEXT NULL,
   transaction_date DATE NOT NULL,

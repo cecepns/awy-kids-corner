@@ -1,14 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
 import { apiService } from '../utils/api'
 import Modal from '../components/Modal'
 import ApiPagination from '../components/ApiPagination'
 import { confirmToast, notifyError, notifySuccess } from '../utils/toast'
-import { formatDate, formatNumber } from '../utils/format'
+import { formatCurrency, formatDate, formatNumber } from '../utils/format'
 
 const initialForm = {
   product_id: '',
   quantity: 1,
+  selling_price: 0,
   reference_no: '',
   notes: '',
   transaction_date: new Date().toISOString().slice(0, 10),
@@ -25,6 +26,21 @@ export default function OutgoingPage({ products, onChanged }) {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState(initialForm)
+  const [costPreview, setCostPreview] = useState({ average_purchase_price: 0 })
+  const [loadingCostPreview, setLoadingCostPreview] = useState(false)
+
+  const summary = useMemo(
+    () =>
+      rows.reduce(
+        (acc, row) => {
+          acc.totalPurchase += Number(row.total_purchase || 0)
+          acc.totalSelling += Number(row.total_selling || 0)
+          return acc
+        },
+        { totalPurchase: 0, totalSelling: 0 },
+      ),
+    [rows],
+  )
 
   const loadData = async () => {
     try {
@@ -50,8 +66,32 @@ export default function OutgoingPage({ products, onChanged }) {
   const resetForm = () => {
     setEditing(null)
     setForm(initialForm)
+    setCostPreview({ average_purchase_price: 0 })
     setModalOpen(false)
   }
+
+  const loadCostPreview = async (productId) => {
+    if (!productId) {
+      setCostPreview({ average_purchase_price: 0 })
+      return
+    }
+    try {
+      setLoadingCostPreview(true)
+      const { data } = await apiService.getProductCost(productId)
+      setCostPreview(data)
+    } catch (error) {
+      notifyError(error.response?.data?.message || 'Gagal mengambil ringkasan harga modal')
+      setCostPreview({ average_purchase_price: 0 })
+    } finally {
+      setLoadingCostPreview(false)
+    }
+  }
+
+  useEffect(() => {
+    if (modalOpen) {
+      loadCostPreview(form.product_id)
+    }
+  }, [form.product_id, modalOpen])
 
   const submitForm = async (event) => {
     event.preventDefault()
@@ -103,12 +143,24 @@ export default function OutgoingPage({ products, onChanged }) {
             onClick={() => {
               setEditing(null)
               setForm(initialForm)
+              setCostPreview({ average_purchase_price: 0 })
               setModalOpen(true)
             }}
           >
             <Plus size={16} />
             Tambah Barang Keluar
           </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="card p-4">
+          <p className="text-xs text-slate-500">Total Modal (halaman ini)</p>
+          <p className="text-xl font-bold text-slate-800">{formatCurrency(summary.totalPurchase)}</p>
+        </div>
+        <div className="card p-4">
+          <p className="text-xs text-slate-500">Total Penjualan (halaman ini)</p>
+          <p className="text-xl font-bold text-slate-800">{formatCurrency(summary.totalSelling)}</p>
         </div>
       </div>
 
@@ -120,6 +172,10 @@ export default function OutgoingPage({ products, onChanged }) {
               <th className="px-3 py-2 text-left">Kode</th>
               <th className="px-3 py-2 text-left">Nama Produk</th>
               <th className="px-3 py-2 text-right">Jumlah</th>
+              <th className="px-3 py-2 text-right">Harga Modal</th>
+              <th className="px-3 py-2 text-right">Harga Jual</th>
+              <th className="px-3 py-2 text-right">Total Modal</th>
+              <th className="px-3 py-2 text-right">Total Jual</th>
               <th className="px-3 py-2 text-left">Referensi</th>
               <th className="px-3 py-2 text-left">Catatan</th>
               <th className="px-3 py-2 text-right">Aksi</th>
@@ -128,13 +184,13 @@ export default function OutgoingPage({ products, onChanged }) {
           <tbody>
             {loading ? (
               <tr>
-                <td className="px-3 py-4 text-center text-slate-500" colSpan={7}>
+                <td className="px-3 py-4 text-center text-slate-500" colSpan={11}>
                   Memuat data...
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td className="px-3 py-4 text-center text-slate-500" colSpan={7}>
+                <td className="px-3 py-4 text-center text-slate-500" colSpan={11}>
                   Data barang keluar belum ada.
                 </td>
               </tr>
@@ -147,6 +203,10 @@ export default function OutgoingPage({ products, onChanged }) {
                   <td className="px-3 py-2 text-right font-medium text-amber-700">
                     -{formatNumber(row.quantity)}
                   </td>
+                  <td className="px-3 py-2 text-right">{formatCurrency(row.purchase_price)}</td>
+                  <td className="px-3 py-2 text-right">{formatCurrency(row.selling_price)}</td>
+                  <td className="px-3 py-2 text-right">{formatCurrency(row.total_purchase)}</td>
+                  <td className="px-3 py-2 text-right font-semibold">{formatCurrency(row.total_selling)}</td>
                   <td className="px-3 py-2">{row.reference_no || '-'}</td>
                   <td className="px-3 py-2">{row.notes || '-'}</td>
                   <td className="px-3 py-2">
@@ -158,6 +218,7 @@ export default function OutgoingPage({ products, onChanged }) {
                           setForm({
                             product_id: row.product_id,
                             quantity: row.quantity,
+                            selling_price: Number(row.selling_price || 0),
                             reference_no: row.reference_no || '',
                             notes: row.notes || '',
                             transaction_date: row.transaction_date?.slice(0, 10),
@@ -235,6 +296,28 @@ export default function OutgoingPage({ products, onChanged }) {
                 min="1"
                 value={form.quantity}
                 onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })}
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">Harga Modal (otomatis)</label>
+              <input
+                type="text"
+                className="input bg-slate-50"
+                value={
+                  loadingCostPreview ? 'Menghitung...' : formatCurrency(Number(costPreview.average_purchase_price || 0))
+                }
+                readOnly
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">Harga Jual</label>
+              <input
+                type="number"
+                className="input"
+                min="0"
+                value={form.selling_price}
+                onChange={(event) => setForm({ ...form, selling_price: Number(event.target.value) })}
                 required
               />
             </div>

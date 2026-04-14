@@ -4,11 +4,12 @@ import { apiService } from '../utils/api'
 import Modal from '../components/Modal'
 import ApiPagination from '../components/ApiPagination'
 import { confirmToast, notifyError, notifySuccess } from '../utils/toast'
-import { formatDate, formatNumber } from '../utils/format'
+import { formatCurrency, formatDate, formatNumber } from '../utils/format'
 
 const initialForm = {
   product_id: '',
   quantity: 1,
+  purchase_price: 0,
   reference_no: '',
   notes: '',
   transaction_date: new Date().toISOString().slice(0, 10),
@@ -120,6 +121,8 @@ export default function IncomingPage({ products, onChanged }) {
               <th className="px-3 py-2 text-left">Kode</th>
               <th className="px-3 py-2 text-left">Nama Produk</th>
               <th className="px-3 py-2 text-right">Jumlah</th>
+              <th className="px-3 py-2 text-right">Harga Beli</th>
+              <th className="px-3 py-2 text-right">Total Beli</th>
               <th className="px-3 py-2 text-left">Referensi</th>
               <th className="px-3 py-2 text-left">Catatan</th>
               <th className="px-3 py-2 text-right">Aksi</th>
@@ -128,13 +131,13 @@ export default function IncomingPage({ products, onChanged }) {
           <tbody>
             {loading ? (
               <tr>
-                <td className="px-3 py-4 text-center text-slate-500" colSpan={7}>
+                <td className="px-3 py-4 text-center text-slate-500" colSpan={9}>
                   Memuat data...
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td className="px-3 py-4 text-center text-slate-500" colSpan={7}>
+                <td className="px-3 py-4 text-center text-slate-500" colSpan={9}>
                   Data barang masuk belum ada.
                 </td>
               </tr>
@@ -147,6 +150,8 @@ export default function IncomingPage({ products, onChanged }) {
                   <td className="px-3 py-2 text-right font-medium text-emerald-700">
                     +{formatNumber(row.quantity)}
                   </td>
+                  <td className="px-3 py-2 text-right">{formatCurrency(row.purchase_price)}</td>
+                  <td className="px-3 py-2 text-right font-semibold">{formatCurrency(row.total_purchase)}</td>
                   <td className="px-3 py-2">{row.reference_no || '-'}</td>
                   <td className="px-3 py-2">{row.notes || '-'}</td>
                   <td className="px-3 py-2">
@@ -158,6 +163,7 @@ export default function IncomingPage({ products, onChanged }) {
                           setForm({
                             product_id: row.product_id,
                             quantity: row.quantity,
+                            purchase_price: Number(row.purchase_price || 0),
                             reference_no: row.reference_no || '',
                             notes: row.notes || '',
                             transaction_date: row.transaction_date?.slice(0, 10),
@@ -236,6 +242,26 @@ export default function IncomingPage({ products, onChanged }) {
                 value={form.quantity}
                 onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })}
                 required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">Harga Beli</label>
+              <input
+                type="number"
+                className="input"
+                min="0"
+                value={form.purchase_price}
+                onChange={(event) => setForm({ ...form, purchase_price: Number(event.target.value) })}
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">Total Beli</label>
+              <input
+                type="text"
+                className="input bg-slate-50"
+                value={formatCurrency(Number(form.quantity || 0) * Number(form.purchase_price || 0))}
+                readOnly
               />
             </div>
           </div>

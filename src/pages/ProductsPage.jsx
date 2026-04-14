@@ -5,16 +5,12 @@ import { apiService } from '../utils/api'
 import Modal from '../components/Modal'
 import ApiPagination from '../components/ApiPagination'
 import { confirmToast, notifyError, notifySuccess } from '../utils/toast'
-import { formatCurrency, formatNumber } from '../utils/format'
+import { formatNumber } from '../utils/format'
 
 const initialForm = {
   code: '',
   name: '',
-  unit: 'buah',
-  min_stock: 0,
   initial_stock: 0,
-  purchase_price: 0,
-  selling_price: 0,
   category: '',
   supplier_id: '',
 }
@@ -22,11 +18,7 @@ const initialForm = {
 const createBulkRow = () => ({
   code: '',
   name: '',
-  unit: 'buah',
-  min_stock: 0,
   initial_stock: 0,
-  purchase_price: 0,
-  selling_price: 0,
   category: '',
   supplier_id: '',
 })
@@ -118,11 +110,7 @@ export default function ProductsPage({ onChanged }) {
     setForm({
       code: item.code,
       name: item.name,
-      unit: item.unit,
-      min_stock: item.min_stock,
       initial_stock: item.initial_stock,
-      purchase_price: item.purchase_price,
-      selling_price: item.selling_price,
       category: item.category,
       supplier_id: item.supplier_id || supplierByName.get(item.supplier) || '',
     })
@@ -192,11 +180,7 @@ export default function ProductsPage({ onChanged }) {
   }
 
   const totalInitialValue = useMemo(
-    () =>
-      products.reduce(
-        (total, item) => total + Number(item.initial_stock || 0) * Number(item.purchase_price || 0),
-        0,
-      ),
+    () => products.reduce((total, item) => total + Number(item.initial_stock || 0), 0),
     [products],
   )
 
@@ -245,11 +229,7 @@ export default function ProductsPage({ onChanged }) {
             <tr>
               <th className="px-3 py-2 text-left">Kode</th>
               <th className="px-3 py-2 text-left">Nama Produk</th>
-              <th className="px-3 py-2 text-left">Satuan</th>
-              <th className="px-3 py-2 text-right">Stok Minimum</th>
               <th className="px-3 py-2 text-right">Stok Awal</th>
-              <th className="px-3 py-2 text-right">Harga Beli</th>
-              <th className="px-3 py-2 text-right">Harga Jual</th>
               <th className="px-3 py-2 text-right">Stok Saat Ini</th>
               <th className="px-3 py-2 text-left">Kategori</th>
               <th className="px-3 py-2 text-left">Supplier</th>
@@ -259,13 +239,13 @@ export default function ProductsPage({ onChanged }) {
           <tbody>
             {loading ? (
               <tr>
-                <td className="px-3 py-4 text-center text-slate-500" colSpan={11}>
+                <td className="px-3 py-4 text-center text-slate-500" colSpan={7}>
                   Memuat data...
                 </td>
               </tr>
             ) : products.length === 0 ? (
               <tr>
-                <td className="px-3 py-4 text-center text-slate-500" colSpan={11}>
+                <td className="px-3 py-4 text-center text-slate-500" colSpan={7}>
                   Data produk belum ada.
                 </td>
               </tr>
@@ -274,11 +254,7 @@ export default function ProductsPage({ onChanged }) {
                 <tr key={item.id} className="border-t border-slate-100">
                   <td className="px-3 py-2">{item.code}</td>
                   <td className="px-3 py-2">{item.name}</td>
-                  <td className="px-3 py-2">{item.unit}</td>
-                  <td className="px-3 py-2 text-right">{formatNumber(item.min_stock)}</td>
                   <td className="px-3 py-2 text-right">{formatNumber(item.initial_stock)}</td>
-                  <td className="px-3 py-2 text-right">{formatCurrency(item.purchase_price)}</td>
-                  <td className="px-3 py-2 text-right">{formatCurrency(item.selling_price)}</td>
                   <td className="px-3 py-2 text-right font-semibold">{formatNumber(item.current_stock)}</td>
                   <td className="px-3 py-2">{item.category || '-'}</td>
                   <td className="px-3 py-2">{item.supplier || '-'}</td>
@@ -316,7 +292,7 @@ export default function ProductsPage({ onChanged }) {
 
       <div className="card p-4">
         <p className="text-sm text-slate-600">
-          Total nilai stok awal: <span className="font-semibold">{formatCurrency(totalInitialValue)}</span>
+          Total stok awal: <span className="font-semibold">{formatNumber(totalInitialValue)}</span>
         </p>
       </div>
 
@@ -346,15 +322,6 @@ export default function ProductsPage({ onChanged }) {
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-slate-500">Satuan</label>
-            <input
-              className="input"
-              value={form.unit}
-              onChange={(event) => setForm({ ...form, unit: event.target.value })}
-              required
-            />
-          </div>
-          <div>
             <label className="mb-1 block text-xs text-slate-500">Kategori</label>
             <input
               className="input"
@@ -375,17 +342,6 @@ export default function ProductsPage({ onChanged }) {
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-slate-500">Stok Minimum</label>
-            <input
-              type="number"
-              className="input"
-              min="0"
-              value={form.min_stock}
-              onChange={(event) => setForm({ ...form, min_stock: Number(event.target.value) })}
-              required
-            />
-          </div>
-          <div>
             <label className="mb-1 block text-xs text-slate-500">Stok Awal</label>
             <input
               type="number"
@@ -396,29 +352,6 @@ export default function ProductsPage({ onChanged }) {
               required
             />
           </div>
-          <div>
-            <label className="mb-1 block text-xs text-slate-500">Harga Beli</label>
-            <input
-              type="number"
-              className="input"
-              min="0"
-              value={form.purchase_price}
-              onChange={(event) => setForm({ ...form, purchase_price: Number(event.target.value) })}
-              required
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-slate-500">Harga Jual</label>
-            <input
-              type="number"
-              className="input"
-              min="0"
-              value={form.selling_price}
-              onChange={(event) => setForm({ ...form, selling_price: Number(event.target.value) })}
-              required
-            />
-          </div>
-
           <div className="sm:col-span-2 mt-2 flex justify-end gap-2">
             <button type="button" className="btn-secondary" onClick={resetForm}>
               Batal
@@ -483,36 +416,6 @@ export default function ProductsPage({ onChanged }) {
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs text-slate-500">Satuan</label>
-                  <input
-                    className="input"
-                    value={row.unit}
-                    onChange={(event) =>
-                      setBulkRows((prev) =>
-                        prev.map((item, rowIndex) =>
-                          rowIndex === index ? { ...item, unit: event.target.value } : item,
-                        ),
-                      )
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs text-slate-500">Stok Minimum</label>
-                  <input
-                    type="number"
-                    className="input"
-                    min="0"
-                    value={row.min_stock}
-                    onChange={(event) =>
-                      setBulkRows((prev) =>
-                        prev.map((item, rowIndex) =>
-                          rowIndex === index ? { ...item, min_stock: Number(event.target.value) } : item,
-                        ),
-                      )
-                    }
-                  />
-                </div>
-                <div>
                   <label className="mb-1 block text-xs text-slate-500">Stok Awal</label>
                   <input
                     type="number"
@@ -523,38 +426,6 @@ export default function ProductsPage({ onChanged }) {
                       setBulkRows((prev) =>
                         prev.map((item, rowIndex) =>
                           rowIndex === index ? { ...item, initial_stock: Number(event.target.value) } : item,
-                        ),
-                      )
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs text-slate-500">Harga Beli</label>
-                  <input
-                    type="number"
-                    className="input"
-                    min="0"
-                    value={row.purchase_price}
-                    onChange={(event) =>
-                      setBulkRows((prev) =>
-                        prev.map((item, rowIndex) =>
-                          rowIndex === index ? { ...item, purchase_price: Number(event.target.value) } : item,
-                        ),
-                      )
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs text-slate-500">Harga Jual</label>
-                  <input
-                    type="number"
-                    className="input"
-                    min="0"
-                    value={row.selling_price}
-                    onChange={(event) =>
-                      setBulkRows((prev) =>
-                        prev.map((item, rowIndex) =>
-                          rowIndex === index ? { ...item, selling_price: Number(event.target.value) } : item,
                         ),
                       )
                     }
