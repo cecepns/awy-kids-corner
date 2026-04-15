@@ -125,6 +125,68 @@ const getProductAveragePurchasePrice = async (connection, productId, upToDate = 
   return totalCost / totalQty
 }
 
+/**
+ * Rumus client:
+ * harga modal per produk pada suatu hasil filter =
+ * (total nilai incoming sampai cutoff) / (total qty outgoing pada hasil filter).
+ */
+const getClientFilteredPurchasePriceMap = async (connection, { where, params, endDate }) => {
+  const map = new Map()
+  const [groupRows] = await connection.execute(
+    `
+    SELECT
+      og.product_id,
+      COALESCE(SUM(og.quantity), 0) AS outgoing_qty,
+      MAX(og.transaction_date) AS max_transaction_date
+    FROM outgoing_goods og
+    JOIN products p ON p.id = og.product_id
+    ${where}
+    GROUP BY og.product_id
+    `,
+    params,
+  )
+  if (!groupRows.length) return map
+
+  const productIds = groupRows.map((row) => Number(row.product_id)).filter((id) => Number.isFinite(id) && id > 0)
+  const placeholders = productIds.map(() => '?').join(',')
+  const [productRows] = await connection.execute(
+    `SELECT id, purchase_price FROM products WHERE id IN (${placeholders})`,
+    productIds,
+  )
+  const fallbackById = new Map(productRows.map((row) => [Number(row.id), Number(row.purchase_price || 0)]))
+  const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
+  const normalizedEndDate = normalizeDateInput(endDate)
+
+  for (const row of groupRows) {
+    const productId = Number(row.product_id)
+    const outgoingQty = Number(row.outgoing_qty || 0)
+    const fallback = fallbackById.get(productId) || 0
+
+    if (!hasIncomingPurchasePrice || outgoingQty <= 0) {
+      map.set(productId, fallback)
+      continue
+    }
+
+    const cutoffDate = normalizedEndDate || normalizeDateInput(row.max_transaction_date)
+    const dateClause = cutoffDate ? 'AND transaction_date <= ?' : ''
+    const queryParams = cutoffDate ? [productId, cutoffDate] : [productId]
+    const [incomingRows] = await connection.execute(
+      `
+      SELECT COALESCE(SUM(quantity * purchase_price), 0) AS total_cost
+      FROM incoming_goods
+      WHERE product_id = ?
+        ${dateClause}
+      `,
+      queryParams,
+    )
+    const totalIncomingCost = Number(incomingRows[0]?.total_cost || 0)
+    const purchasePrice = totalIncomingCost > 0 ? totalIncomingCost / outgoingQty : fallback
+    map.set(productId, purchasePrice)
+  }
+
+  return map
+}
+
 const normalizeReferenceNo = (referenceNo) => {
   if (referenceNo == null) return null
   const s = String(referenceNo).trim()
@@ -1021,23 +1083,23 @@ app.get('/api/outgoing', async (req, res) => {
       [...params, meta.limit, meta.offset],
     )
 
+    const purchasePriceByProduct = await getClientFilteredPurchasePriceMap(connection, {
+      where,
+      params,
+      endDate,
+    })
+
     res.json({
-      data: await Promise.all(
-        rows.map(async (row) => {
-          const livePurchasePrice = await getProductAveragePurchasePrice(
-            connection,
-            row.product_id,
-            row.transaction_date,
-          )
-          const qty = Number(row.quantity || 0)
-          return {
-            ...row,
-            purchase_price: livePurchasePrice,
-            total_purchase: livePurchasePrice * qty,
-            total_selling: Number(row.selling_price || 0) * qty,
-          }
-        }),
-      ),
+      data: rows.map((row) => {
+        const qty = Number(row.quantity || 0)
+        const livePurchasePrice = purchasePriceByProduct.get(Number(row.product_id)) ?? Number(row.purchase_price || 0)
+        return {
+          ...row,
+          purchase_price: livePurchasePrice,
+          total_purchase: livePurchasePrice * qty,
+          total_selling: Number(row.selling_price || 0) * qty,
+        }
+      }),
       meta: {
         page: meta.page,
         limit: meta.limit,
@@ -1283,62 +1345,48 @@ app.get('/api/bookkeeping', async (req, res) => {
       [...whereParams, meta.limit, meta.offset],
     )
 
-    const data = await Promise.all(
-      rows.map(async (row) => {
-        const qty = Number(row.quantity || 0)
-        const livePurchase = await getProductAveragePurchasePrice(connection, row.product_id, row.transaction_date)
-        const margin = (Number(row.selling_price || 0) - Number(row.discount || 0) - livePurchase) * qty
-        return {
-          ...row,
-          purchase_price: livePurchase,
-          margin,
-        }
-      }),
+    const purchasePriceByProduct = await getClientFilteredPurchasePriceMap(connection, {
+      where,
+      params: whereParams,
+      endDate,
+    })
+
+    const data = rows.map((row) => {
+      const qty = Number(row.quantity || 0)
+      const livePurchase = purchasePriceByProduct.get(Number(row.product_id)) ?? Number(row.purchase_price || 0)
+      const margin = (Number(row.selling_price || 0) - Number(row.discount || 0) - livePurchase) * qty
+      return {
+        ...row,
+        purchase_price: livePurchase,
+        margin,
+      }
+    })
+
+    const [statRows] = await connection.execute(
+      `
+      SELECT
+        og.product_id,
+        og.quantity,
+        og.selling_price,
+        og.discount
+      FROM outgoing_goods og
+      ${where}
+      `,
+      whereParams,
     )
-
-    const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
-    const statsSql = hasIncomingPurchasePrice
-      ? `
-      SELECT
-        COUNT(*) AS total_transactions,
-        COALESCE(SUM(og.selling_price * og.quantity), 0) AS total_revenue,
-        COALESCE(SUM(
-          (og.selling_price - og.discount - (
-            CASE
-              WHEN COALESCE(ig.total_qty, 0) > 0 AND COALESCE(ig.total_cost, 0) > 0
-                THEN ig.total_cost / ig.total_qty
-              ELSE p.purchase_price
-            END
-          )) * og.quantity
-        ), 0) AS total_margin
-      FROM outgoing_goods og
-      JOIN products p ON p.id = og.product_id
-      LEFT JOIN (
-        SELECT
-          product_id,
-          COALESCE(SUM(quantity), 0) AS total_qty,
-          COALESCE(SUM(quantity * purchase_price), 0) AS total_cost
-        FROM incoming_goods
-        GROUP BY product_id
-      ) ig ON ig.product_id = og.product_id
-      ${where}
-      `
-      : `
-      SELECT
-        COUNT(*) AS total_transactions,
-        COALESCE(SUM(og.selling_price * og.quantity), 0) AS total_revenue,
-        COALESCE(SUM((og.selling_price - og.discount - p.purchase_price) * og.quantity), 0) AS total_margin
-      FROM outgoing_goods og
-      JOIN products p ON p.id = og.product_id
-      ${where}
-      `
-
-    const [statsRows] = await connection.execute(statsSql, whereParams)
-    const stats = statsRows[0] || {
-      total_transactions: 0,
-      total_revenue: 0,
-      total_margin: 0,
-    }
+    const stats = statRows.reduce(
+      (acc, row) => {
+        const qty = Number(row.quantity || 0)
+        const selling = Number(row.selling_price || 0)
+        const discount = Number(row.discount || 0)
+        const purchase = purchasePriceByProduct.get(Number(row.product_id)) ?? 0
+        acc.total_transactions += 1
+        acc.total_revenue += selling * qty
+        acc.total_margin += (selling - discount - purchase) * qty
+        return acc
+      },
+      { total_transactions: 0, total_revenue: 0, total_margin: 0 },
+    )
 
     res.json({
       data,

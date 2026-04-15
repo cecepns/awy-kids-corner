@@ -11,6 +11,7 @@ const initialForm = {
   outgoing_id: '',
   product_id: '',
   transaction_date: '',
+  purchase_price: 0,
   selling_price: 0,
   discount: 0,
 }
@@ -37,27 +38,6 @@ export default function BookkeepingPage({ onChanged }) {
   const [totalItems, setTotalItems] = useState(0)
   const [modalOpen, setModalOpen] = useState(false)
   const [form, setForm] = useState(initialForm)
-  const [costPreview, setCostPreview] = useState({ average_purchase_price: 0 })
-  const [loadingCostPreview, setLoadingCostPreview] = useState(false)
-
-  const loadCostPreview = async (productId, transactionDate) => {
-    if (!productId) {
-      setCostPreview({ average_purchase_price: 0 })
-      return
-    }
-    try {
-      setLoadingCostPreview(true)
-      const { data } = await apiService.getProductCost(productId, {
-        transaction_date: transactionDate || undefined,
-      })
-      setCostPreview(data)
-    } catch (error) {
-      notifyError(error.response?.data?.message || 'Gagal mengambil ringkasan harga beli')
-      setCostPreview({ average_purchase_price: 0 })
-    } finally {
-      setLoadingCostPreview(false)
-    }
-  }
 
   const loadData = async () => {
     try {
@@ -86,16 +66,9 @@ export default function BookkeepingPage({ onChanged }) {
     loadData()
   }, [page, limit, startDate, endDate])
 
-  useEffect(() => {
-    if (modalOpen && form.product_id) {
-      loadCostPreview(form.product_id, form.transaction_date)
-    }
-  }, [modalOpen, form.product_id, form.transaction_date])
-
   const closeModal = () => {
     setModalOpen(false)
     setForm(initialForm)
-    setCostPreview({ average_purchase_price: 0 })
   }
 
   const submitUpdate = async (event) => {
@@ -130,6 +103,9 @@ export default function BookkeepingPage({ onChanged }) {
             isClearable
             className="input"
             wrapperClassName="w-full"
+            portalId="root"
+            popperPlacement="bottom-start"
+            popperClassName="z-[70]"
             maxDate={endDate ? parseDateValue(endDate) : undefined}
           />
           <DatePicker
@@ -143,6 +119,9 @@ export default function BookkeepingPage({ onChanged }) {
             isClearable
             className="input"
             wrapperClassName="w-full"
+            portalId="root"
+            popperPlacement="bottom-start"
+            popperClassName="z-[70]"
             minDate={startDate ? parseDateValue(startDate) : undefined}
           />
           <button
@@ -226,10 +205,10 @@ export default function BookkeepingPage({ onChanged }) {
                             outgoing_id: row.id,
                             product_id: row.product_id,
                             transaction_date: row.transaction_date?.slice(0, 10) || '',
+                            purchase_price: Number(row.purchase_price || 0),
                             selling_price: row.selling_price || 0,
                             discount: row.discount || 0,
                           })
-                          setCostPreview({ average_purchase_price: 0 })
                           setModalOpen(true)
                         }}
                       >
@@ -263,11 +242,7 @@ export default function BookkeepingPage({ onChanged }) {
             <input
               type="text"
               className="input bg-slate-50"
-              value={
-                loadingCostPreview
-                  ? 'Menghitung...'
-                  : formatCurrency(Number(costPreview.average_purchase_price || 0))
-              }
+              value={formatCurrency(Number(form.purchase_price || 0))}
               readOnly
             />
           </div>

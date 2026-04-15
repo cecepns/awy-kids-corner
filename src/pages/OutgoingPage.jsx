@@ -234,7 +234,7 @@ export default function OutgoingPage({ products, onChanged }) {
               Tambah Barang Keluar
             </button>
           </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
             <DatePicker
               selected={parseDateValue(startDate)}
               onChange={(value) => {
@@ -246,6 +246,9 @@ export default function OutgoingPage({ products, onChanged }) {
               isClearable
               className="input"
               wrapperClassName="w-full"
+              portalId="root"
+              popperPlacement="bottom-start"
+              popperClassName="z-[70]"
               maxDate={endDate ? parseDateValue(endDate) : undefined}
             />
             <DatePicker
@@ -259,11 +262,14 @@ export default function OutgoingPage({ products, onChanged }) {
               isClearable
               className="input"
               wrapperClassName="w-full"
+              portalId="root"
+              popperPlacement="bottom-start"
+              popperClassName="z-[70]"
               minDate={startDate ? parseDateValue(startDate) : undefined}
             />
             <button
               type="button"
-              className="btn-secondary"
+              className="btn-secondary self-start"
               onClick={() => {
                 setStartDate('')
                 setEndDate('')
@@ -431,6 +437,9 @@ export default function OutgoingPage({ products, onChanged }) {
                 dateFormat="yyyy-MM-dd"
                 className="input"
                 wrapperClassName="w-full"
+                portalId="root"
+                popperPlacement="bottom-start"
+                popperClassName="z-[70]"
                 required
               />
             </div>
