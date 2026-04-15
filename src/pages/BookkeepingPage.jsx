@@ -8,7 +8,7 @@ import { formatCurrency, formatDate, formatNumber } from '../utils/format'
 
 const initialForm = {
   outgoing_id: '',
-  purchase_price: 0,
+  product_id: '',
   selling_price: 0,
   discount: 0,
 }
@@ -23,6 +23,25 @@ export default function BookkeepingPage({ onChanged }) {
   const [totalItems, setTotalItems] = useState(0)
   const [modalOpen, setModalOpen] = useState(false)
   const [form, setForm] = useState(initialForm)
+  const [costPreview, setCostPreview] = useState({ average_purchase_price: 0 })
+  const [loadingCostPreview, setLoadingCostPreview] = useState(false)
+
+  const loadCostPreview = async (productId) => {
+    if (!productId) {
+      setCostPreview({ average_purchase_price: 0 })
+      return
+    }
+    try {
+      setLoadingCostPreview(true)
+      const { data } = await apiService.getProductCost(productId)
+      setCostPreview(data)
+    } catch (error) {
+      notifyError(error.response?.data?.message || 'Gagal mengambil ringkasan harga beli')
+      setCostPreview({ average_purchase_price: 0 })
+    } finally {
+      setLoadingCostPreview(false)
+    }
+  }
 
   const loadData = async () => {
     try {
@@ -46,13 +65,28 @@ export default function BookkeepingPage({ onChanged }) {
     loadData()
   }, [page, limit])
 
+  useEffect(() => {
+    if (modalOpen && form.product_id) {
+      loadCostPreview(form.product_id)
+    }
+  }, [modalOpen, form.product_id])
+
+  const closeModal = () => {
+    setModalOpen(false)
+    setForm(initialForm)
+    setCostPreview({ average_purchase_price: 0 })
+  }
+
   const submitUpdate = async (event) => {
     event.preventDefault()
     try {
-      await apiService.updateBookkeeping(form)
+      await apiService.updateBookkeeping({
+        outgoing_id: form.outgoing_id,
+        selling_price: form.selling_price,
+        discount: form.discount,
+      })
       notifySuccess('Pembukuan berhasil diperbarui')
-      setModalOpen(false)
-      setForm(initialForm)
+      closeModal()
       await loadData()
       onChanged()
     } catch (error) {
@@ -126,10 +160,11 @@ export default function BookkeepingPage({ onChanged }) {
                         onClick={() => {
                           setForm({
                             outgoing_id: row.id,
-                            purchase_price: row.purchase_price || 0,
+                            product_id: row.product_id,
                             selling_price: row.selling_price || 0,
                             discount: row.discount || 0,
                           })
+                          setCostPreview({ average_purchase_price: 0 })
                           setModalOpen(true)
                         }}
                       >
@@ -156,17 +191,19 @@ export default function BookkeepingPage({ onChanged }) {
         />
       </div>
 
-      <Modal title="Edit Pembukuan" isOpen={modalOpen} onClose={() => setModalOpen(false)} maxWidth="max-w-md">
+      <Modal title="Edit Pembukuan" isOpen={modalOpen} onClose={closeModal} maxWidth="max-w-md">
         <form className="space-y-3" onSubmit={submitUpdate}>
           <div>
-            <label className="mb-1 block text-xs text-slate-500">Harga Beli</label>
+            <label className="mb-1 block text-xs text-slate-500">Harga Beli (otomatis)</label>
             <input
-              type="number"
-              className="input"
-              min="0"
-              value={form.purchase_price}
-              onChange={(event) => setForm({ ...form, purchase_price: Number(event.target.value) })}
-              required
+              type="text"
+              className="input bg-slate-50"
+              value={
+                loadingCostPreview
+                  ? 'Menghitung...'
+                  : formatCurrency(Number(costPreview.average_purchase_price || 0))
+              }
+              readOnly
             />
           </div>
           <div>
@@ -192,7 +229,7 @@ export default function BookkeepingPage({ onChanged }) {
             />
           </div>
           <div className="flex justify-end gap-2">
-            <button type="button" className="btn-secondary" onClick={() => setModalOpen(false)}>
+            <button type="button" className="btn-secondary" onClick={closeModal}>
               Batal
             </button>
             <button className="btn-primary" type="submit">

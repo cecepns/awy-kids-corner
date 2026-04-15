@@ -72,14 +72,21 @@ export default function ProductsPage({ onChanged }) {
     setModalOpen(true)
   }
 
+  const normalizeInitialStock = (value) => {
+    if (value === '' || value === null || value === undefined) return 0
+    const n = Number(value)
+    return Number.isFinite(n) ? n : 0
+  }
+
   const submitForm = async (event) => {
     event.preventDefault()
     try {
+      const payload = { ...form, initial_stock: normalizeInitialStock(form.initial_stock) }
       if (editing) {
-        await apiService.updateProduct(editing.id, form)
+        await apiService.updateProduct(editing.id, payload)
         notifySuccess('Produk berhasil diperbarui')
       } else {
-        await apiService.createProduct(form)
+        await apiService.createProduct(payload)
         notifySuccess('Produk berhasil ditambahkan')
       }
       resetForm()
@@ -111,8 +118,13 @@ export default function ProductsPage({ onChanged }) {
       return
     }
 
+    const productsPayload = filledRows.map((row) => ({
+      ...row,
+      initial_stock: normalizeInitialStock(row.initial_stock),
+    }))
+
     try {
-      await apiService.bulkInsertProducts({ products: filledRows })
+      await apiService.bulkInsertProducts({ products: productsPayload })
       notifySuccess(`Bulk insert berhasil (${filledRows.length} data)`)
       setBulkOpen(false)
       setBulkRows([createBulkRow()])
@@ -278,8 +290,12 @@ export default function ProductsPage({ onChanged }) {
               className="input"
               min="0"
               value={form.initial_stock}
-              onChange={(event) => setForm({ ...form, initial_stock: Number(event.target.value) })}
-              required
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  initial_stock: event.target.value === '' ? '' : Number(event.target.value),
+                })
+              }
             />
           </div>
           <div className="sm:col-span-2 mt-2 flex justify-end gap-2">
@@ -355,7 +371,12 @@ export default function ProductsPage({ onChanged }) {
                     onChange={(event) =>
                       setBulkRows((prev) =>
                         prev.map((item, rowIndex) =>
-                          rowIndex === index ? { ...item, initial_stock: Number(event.target.value) } : item,
+                          rowIndex === index
+                            ? {
+                                ...item,
+                                initial_stock: event.target.value === '' ? '' : Number(event.target.value),
+                              }
+                            : item,
                         ),
                       )
                     }

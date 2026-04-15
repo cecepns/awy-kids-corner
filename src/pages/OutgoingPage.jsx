@@ -346,6 +346,13 @@ export default function OutgoingPage({ products, onChanged }) {
                 setForm({ ...form, product_id: option?.value || '' })
               }}
               formatOptionLabel={formatProductOptionLabel}
+              isOptionDisabled={(option) => {
+                const stock = Number(option?.stock ?? 0)
+                if (editing && option && Number(option.value) === Number(form.product_id)) {
+                  return false
+                }
+                return stock <= 0
+              }}
               noOptionsMessage={() => 'Produk tidak ditemukan'}
             />
             {selectedProduct ? (
@@ -409,6 +416,9 @@ export default function OutgoingPage({ products, onChanged }) {
               value={form.reference_no}
               onChange={(event) => setForm({ ...form, reference_no: event.target.value })}
             />
+            <p className="mt-1 text-xs text-slate-500">
+              Jika diisi, nomor harus unik (tidak boleh sama dengan barang masuk atau barang keluar lain).
+            </p>
           </div>
           <div>
             <label className="mb-1 block text-xs text-slate-500">Catatan</label>

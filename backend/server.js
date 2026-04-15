@@ -113,6 +113,93 @@ const getProductAveragePurchasePrice = async (connection, productId) => {
   return totalCost / totalQty
 }
 
+/** Map product_id -> current weighted average modal (same rules as getProductAveragePurchasePrice). */
+const getBatchAveragePurchasePrices = async (connection, productIds) => {
+  const map = new Map()
+  const uniq = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0))]
+  if (!uniq.length) return map
+
+  const placeholders = uniq.map(() => '?').join(',')
+  const [productRows] = await connection.execute(
+    `SELECT id, purchase_price FROM products WHERE id IN (${placeholders})`,
+    uniq,
+  )
+  const fallbackById = new Map(productRows.map((p) => [Number(p.id), Number(p.purchase_price || 0)]))
+
+  const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
+  if (!hasIncomingPurchasePrice) {
+    uniq.forEach((id) => map.set(id, fallbackById.get(id) || 0))
+    return map
+  }
+
+  const [sumRows] = await connection.execute(
+    `
+    SELECT
+      product_id,
+      COALESCE(SUM(quantity), 0) AS total_qty,
+      COALESCE(SUM(quantity * purchase_price), 0) AS total_cost
+    FROM incoming_goods
+    WHERE product_id IN (${placeholders})
+    GROUP BY product_id
+    `,
+    uniq,
+  )
+  const sumById = new Map(sumRows.map((s) => [Number(s.product_id), s]))
+
+  for (const id of uniq) {
+    const s = sumById.get(id)
+    const totalQty = Number(s?.total_qty || 0)
+    const totalCost = Number(s?.total_cost || 0)
+    const fallback = fallbackById.get(id) || 0
+    const average = totalQty > 0 && totalCost > 0 ? totalCost / totalQty : fallback
+    map.set(id, average)
+  }
+  return map
+}
+
+const normalizeReferenceNo = (referenceNo) => {
+  if (referenceNo == null) return null
+  const s = String(referenceNo).trim()
+  return s.length ? s : null
+}
+
+/** Nomor resi/referensi unik di barang masuk dan barang keluar (abaikan baris yang sedang diedit). */
+const assertReferenceNoUnique = async (connection, normalizedRef, { excludeIncomingId, excludeOutgoingId } = {}) => {
+  if (!normalizedRef) return
+
+  const incParams = [normalizedRef]
+  let incSql = `
+    SELECT id FROM incoming_goods
+    WHERE reference_no IS NOT NULL AND TRIM(reference_no) = ?
+  `
+  if (excludeIncomingId != null) {
+    incSql += ' AND id <> ?'
+    incParams.push(excludeIncomingId)
+  }
+  const [incDup] = await connection.execute(incSql, incParams)
+  if (incDup.length) {
+    const err = new Error('Nomor referensi / resi sudah digunakan')
+    err.statusCode = 400
+    throw err
+  }
+
+  const outParams = [normalizedRef]
+  let outSql = `
+    SELECT id FROM outgoing_goods
+    WHERE reference_no IS NOT NULL AND TRIM(reference_no) = ?
+  `
+  if (excludeOutgoingId != null) {
+    outSql += ' AND id <> ?'
+    outParams.push(excludeOutgoingId)
+  }
+  const [outDup] = await connection.execute(outSql, outParams)
+  if (outDup.length) {
+    const err = new Error('Nomor referensi / resi sudah digunakan')
+    err.statusCode = 400
+    throw err
+  }
+}
+
 const sanitizeUser = (user) => ({
   id: user.id,
   name: user.name,
@@ -794,12 +881,15 @@ app.post('/api/incoming', async (req, res) => {
       return res.status(404).json({ message: 'Produk tidak ditemukan' })
     }
 
+    const refNorm = normalizeReferenceNo(reference_no)
+    await assertReferenceNoUnique(connection, refNorm, {})
+
     await connection.execute(
       `
       INSERT INTO incoming_goods (product_id, quantity, purchase_price, reference_no, notes, transaction_date)
       VALUES (?, ?, ?, ?, ?, ?)
       `,
-      [product_id, Number(quantity), Number(purchase_price || 0), reference_no || null, notes || null, transaction_date],
+      [product_id, Number(quantity), Number(purchase_price || 0), refNorm, notes || null, transaction_date],
     )
 
     await recalculateStockByProductId(connection, product_id)
@@ -809,6 +899,10 @@ app.post('/api/incoming', async (req, res) => {
     res.status(201).json({ message: 'Barang masuk berhasil ditambahkan' })
   } catch (error) {
     await connection.rollback()
+    if (Number(error.statusCode) === 400) {
+      res.status(400).json({ message: error.message })
+      return
+    }
     res.status(500).json({ message: error.message })
   } finally {
     connection.release()
@@ -839,13 +933,16 @@ app.put('/api/incoming/:id', async (req, res) => {
       return res.status(400).json({ message: 'Quantity dan harga beli wajib valid' })
     }
 
+    const refNorm = normalizeReferenceNo(reference_no)
+    await assertReferenceNoUnique(connection, refNorm, { excludeIncomingId: Number(id) })
+
     await connection.execute(
       `
       UPDATE incoming_goods
       SET product_id = ?, quantity = ?, purchase_price = ?, reference_no = ?, notes = ?, transaction_date = ?
       WHERE id = ?
       `,
-      [product_id, Number(quantity), Number(purchase_price || 0), reference_no || null, notes || null, transaction_date, id],
+      [product_id, Number(quantity), Number(purchase_price || 0), refNorm, notes || null, transaction_date, id],
     )
 
     await recalculateStockByProductId(connection, old.product_id)
@@ -859,6 +956,10 @@ app.put('/api/incoming/:id', async (req, res) => {
     res.json({ message: 'Barang masuk berhasil diperbarui' })
   } catch (error) {
     await connection.rollback()
+    if (Number(error.statusCode) === 400) {
+      res.status(400).json({ message: error.message })
+      return
+    }
     res.status(500).json({ message: error.message })
   } finally {
     connection.release()
@@ -900,6 +1001,7 @@ app.delete('/api/incoming/:id', async (req, res) => {
 })
 
 app.get('/api/outgoing', async (req, res) => {
+  const connection = await pool.getConnection()
   try {
     const search = (req.query.search || '').trim()
     const { page, limit } = parsePagination(req.query)
@@ -911,7 +1013,7 @@ app.get('/api/outgoing', async (req, res) => {
       params.push(searchValue, searchValue, searchValue)
     }
 
-    const [countRows] = await pool.execute(
+    const [countRows] = await connection.execute(
       `
       SELECT COUNT(*) AS total
       FROM outgoing_goods og
@@ -922,7 +1024,7 @@ app.get('/api/outgoing', async (req, res) => {
     )
     const meta = buildPaginationMeta(page, limit, Number(countRows[0]?.total || 0))
 
-    const [rows] = await pool.execute(
+    const [rows] = await connection.execute(
       `
       SELECT og.*, p.code AS product_code, p.name AS product_name
       FROM outgoing_goods og
@@ -933,12 +1035,23 @@ app.get('/api/outgoing', async (req, res) => {
       `,
       [...params, meta.limit, meta.offset],
     )
+
+    const priceByProduct = await getBatchAveragePurchasePrices(
+      connection,
+      rows.map((row) => row.product_id),
+    )
+
     res.json({
-      data: rows.map((row) => ({
-        ...row,
-        total_purchase: Number(row.purchase_price || 0) * Number(row.quantity || 0),
-        total_selling: Number(row.selling_price || 0) * Number(row.quantity || 0),
-      })),
+      data: rows.map((row) => {
+        const qty = Number(row.quantity || 0)
+        const livePurchasePrice = priceByProduct.get(Number(row.product_id)) ?? Number(row.purchase_price || 0)
+        return {
+          ...row,
+          purchase_price: livePurchasePrice,
+          total_purchase: livePurchasePrice * qty,
+          total_selling: Number(row.selling_price || 0) * qty,
+        }
+      }),
       meta: {
         page: meta.page,
         limit: meta.limit,
@@ -948,6 +1061,8 @@ app.get('/api/outgoing', async (req, res) => {
     })
   } catch (error) {
     res.status(500).json({ message: error.message })
+  } finally {
+    connection.release()
   }
 })
 
@@ -973,6 +1088,9 @@ app.post('/api/outgoing', async (req, res) => {
 
     const averagePurchasePrice = await getProductAveragePurchasePrice(connection, product_id)
 
+    const refNorm = normalizeReferenceNo(reference_no)
+    await assertReferenceNoUnique(connection, refNorm, {})
+
     await connection.execute(
       `
       INSERT INTO outgoing_goods
@@ -982,7 +1100,7 @@ app.post('/api/outgoing', async (req, res) => {
       [
         product_id,
         Number(quantity),
-        reference_no || null,
+        refNorm,
         notes || null,
         transaction_date,
         Number(averagePurchasePrice || 0),
@@ -998,6 +1116,10 @@ app.post('/api/outgoing', async (req, res) => {
     res.status(201).json({ message: 'Barang keluar berhasil ditambahkan' })
   } catch (error) {
     await connection.rollback()
+    if (Number(error.statusCode) === 400) {
+      res.status(400).json({ message: error.message })
+      return
+    }
     res.status(500).json({ message: error.message })
   } finally {
     connection.release()
@@ -1041,6 +1163,9 @@ app.put('/api/outgoing/:id', async (req, res) => {
 
     const averagePurchasePrice = await getProductAveragePurchasePrice(connection, product_id)
 
+    const refNorm = normalizeReferenceNo(reference_no)
+    await assertReferenceNoUnique(connection, refNorm, { excludeOutgoingId: Number(id) })
+
     await connection.execute(
       `
       UPDATE outgoing_goods
@@ -1050,7 +1175,7 @@ app.put('/api/outgoing/:id', async (req, res) => {
       [
         product_id,
         Number(quantity),
-        reference_no || null,
+        refNorm,
         notes || null,
         transaction_date,
         Number(averagePurchasePrice || 0),
@@ -1070,6 +1195,10 @@ app.put('/api/outgoing/:id', async (req, res) => {
     res.json({ message: 'Barang keluar berhasil diperbarui' })
   } catch (error) {
     await connection.rollback()
+    if (Number(error.statusCode) === 400) {
+      res.status(400).json({ message: error.message })
+      return
+    }
     res.status(500).json({ message: error.message })
   } finally {
     connection.release()
@@ -1112,23 +1241,24 @@ app.delete('/api/outgoing/:id', async (req, res) => {
 })
 
 app.get('/api/bookkeeping', async (req, res) => {
+  const connection = await pool.getConnection()
   try {
     const { page, limit } = parsePagination(req.query)
-    const [countRows] = await pool.execute('SELECT COUNT(*) AS total FROM outgoing_goods')
+    const [countRows] = await connection.execute('SELECT COUNT(*) AS total FROM outgoing_goods')
     const meta = buildPaginationMeta(page, limit, Number(countRows[0]?.total || 0))
 
-    const [rows] = await pool.execute(
+    const [rows] = await connection.execute(
       `
       SELECT
         og.id,
+        og.product_id,
         og.transaction_date,
         og.quantity,
         og.purchase_price,
         og.selling_price,
         og.discount,
         p.code AS product_code,
-        p.name AS product_name,
-        ((og.selling_price - og.discount - og.purchase_price) * og.quantity) AS margin
+        p.name AS product_name
       FROM outgoing_goods og
       JOIN products p ON p.id = og.product_id
       ORDER BY og.transaction_date DESC, og.id DESC
@@ -1137,16 +1267,58 @@ app.get('/api/bookkeeping', async (req, res) => {
       [meta.limit, meta.offset],
     )
 
-    const [statsRows] = await pool.execute(
-      `
+    const priceByProduct = await getBatchAveragePurchasePrices(
+      connection,
+      rows.map((row) => row.product_id),
+    )
+
+    const data = rows.map((row) => {
+      const qty = Number(row.quantity || 0)
+      const livePurchase = priceByProduct.get(Number(row.product_id)) ?? Number(row.purchase_price || 0)
+      const margin = (Number(row.selling_price || 0) - Number(row.discount || 0) - livePurchase) * qty
+      return {
+        ...row,
+        purchase_price: livePurchase,
+        margin,
+      }
+    })
+
+    const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
+    const statsSql = hasIncomingPurchasePrice
+      ? `
       SELECT
         COUNT(*) AS total_transactions,
         COALESCE(SUM(og.selling_price * og.quantity), 0) AS total_revenue,
-        COALESCE(SUM((og.selling_price - og.discount - og.purchase_price) * og.quantity), 0) AS total_margin
+        COALESCE(SUM(
+          (og.selling_price - og.discount - (
+            CASE
+              WHEN COALESCE(ig.total_qty, 0) > 0 AND COALESCE(ig.total_cost, 0) > 0
+                THEN ig.total_cost / ig.total_qty
+              ELSE p.purchase_price
+            END
+          )) * og.quantity
+        ), 0) AS total_margin
       FROM outgoing_goods og
-      `,
-    )
+      JOIN products p ON p.id = og.product_id
+      LEFT JOIN (
+        SELECT
+          product_id,
+          COALESCE(SUM(quantity), 0) AS total_qty,
+          COALESCE(SUM(quantity * purchase_price), 0) AS total_cost
+        FROM incoming_goods
+        GROUP BY product_id
+      ) ig ON ig.product_id = og.product_id
+      `
+      : `
+      SELECT
+        COUNT(*) AS total_transactions,
+        COALESCE(SUM(og.selling_price * og.quantity), 0) AS total_revenue,
+        COALESCE(SUM((og.selling_price - og.discount - p.purchase_price) * og.quantity), 0) AS total_margin
+      FROM outgoing_goods og
+      JOIN products p ON p.id = og.product_id
+      `
 
+    const [statsRows] = await connection.execute(statsSql)
     const stats = statsRows[0] || {
       total_transactions: 0,
       total_revenue: 0,
@@ -1154,7 +1326,7 @@ app.get('/api/bookkeeping', async (req, res) => {
     }
 
     res.json({
-      data: rows,
+      data,
       stats,
       meta: {
         page: meta.page,
@@ -1165,20 +1337,25 @@ app.get('/api/bookkeeping', async (req, res) => {
     })
   } catch (error) {
     res.status(500).json({ message: error.message })
+  } finally {
+    connection.release()
   }
 })
 
 app.post('/api/bookkeeping', async (req, res) => {
   const connection = await pool.getConnection()
   try {
-    const { outgoing_id, purchase_price, selling_price, discount } = req.body
+    const { outgoing_id, selling_price, discount } = req.body
     await connection.beginTransaction()
 
-    const [rows] = await connection.execute('SELECT id FROM outgoing_goods WHERE id = ?', [outgoing_id])
+    const [rows] = await connection.execute('SELECT id, product_id FROM outgoing_goods WHERE id = ?', [outgoing_id])
     if (!rows.length) {
       await connection.rollback()
       return res.status(404).json({ message: 'Transaksi keluar tidak ditemukan' })
     }
+
+    const productId = rows[0].product_id
+    const averagePurchasePrice = await getProductAveragePurchasePrice(connection, productId)
 
     await connection.execute(
       `
@@ -1186,7 +1363,7 @@ app.post('/api/bookkeeping', async (req, res) => {
       SET purchase_price = ?, selling_price = ?, discount = ?
       WHERE id = ?
       `,
-      [Number(purchase_price || 0), Number(selling_price || 0), Number(discount || 0), outgoing_id],
+      [Number(averagePurchasePrice || 0), Number(selling_price || 0), Number(discount || 0), outgoing_id],
     )
 
     await logActivity(connection, 'UPDATE_BOOKKEEPING', `Edit pembukuan transaksi keluar #${outgoing_id}`)

@@ -353,6 +353,9 @@ export default function IncomingPage({ products, onChanged }) {
               value={form.reference_no}
               onChange={(event) => setForm({ ...form, reference_no: event.target.value })}
             />
+            <p className="mt-1 text-xs text-slate-500">
+              Jika diisi, nomor harus unik (tidak boleh sama dengan barang masuk atau barang keluar lain).
+            </p>
           </div>
           <div>
             <label className="mb-1 block text-xs text-slate-500">Catatan</label>
