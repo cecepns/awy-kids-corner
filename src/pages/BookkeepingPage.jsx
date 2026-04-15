@@ -118,7 +118,7 @@ export default function BookkeepingPage({ onChanged }) {
   return (
     <div className="space-y-4">
       <div className="card p-4">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
           <DatePicker
             selected={parseDateValue(startDate)}
             onChange={(value) => {
@@ -147,7 +147,7 @@ export default function BookkeepingPage({ onChanged }) {
           />
           <button
             type="button"
-            className="btn-secondary"
+            className="btn-secondary self-start"
             onClick={() => {
               setStartDate('')
               setEndDate('')
