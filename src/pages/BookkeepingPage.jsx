@@ -17,6 +17,7 @@ const initialForm = {
 }
 
 const parseDateValue = (value) => (value ? new Date(`${value}T00:00:00`) : null)
+const parseMonthValue = (value) => (value ? new Date(`${value}-01T00:00:00`) : null)
 
 const formatDateValue = (value) => {
   if (!value) return ''
@@ -26,11 +27,17 @@ const formatDateValue = (value) => {
   return `${year}-${month}-${day}`
 }
 
+const formatMonthValue = (value) => {
+  if (!value) return ''
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  return `${year}-${month}`
+}
+
 export default function BookkeepingPage({ onChanged }) {
   const [rows, setRows] = useState([])
   const [stats, setStats] = useState(null)
-  const [startDate, setStartDate] = useState('')
-  const [endDate, setEndDate] = useState('')
+  const [filterMonth, setFilterMonth] = useState('')
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(20)
@@ -45,8 +52,7 @@ export default function BookkeepingPage({ onChanged }) {
       const { data } = await apiService.getBookkeeping({
         page,
         limit,
-        start_date: startDate || undefined,
-        end_date: endDate || undefined,
+        month: filterMonth || undefined,
       })
       setRows(data.data)
       setStats(data.stats)
@@ -64,7 +70,7 @@ export default function BookkeepingPage({ onChanged }) {
 
   useEffect(() => {
     loadData()
-  }, [page, limit, startDate, endDate])
+  }, [page, limit, filterMonth])
 
   const closeModal = () => {
     setModalOpen(false)
@@ -91,59 +97,46 @@ export default function BookkeepingPage({ onChanged }) {
   return (
     <div className="space-y-4">
       <div className="card p-4">
-        <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
           <DatePicker
-            selected={parseDateValue(startDate)}
+            selected={parseMonthValue(filterMonth)}
             onChange={(value) => {
-              setStartDate(formatDateValue(value))
+              setFilterMonth(formatMonthValue(value))
               setPage(1)
             }}
-            dateFormat="yyyy-MM-dd"
-            placeholderText="Tanggal awal"
+            dateFormat="MM/yyyy"
+            placeholderText="Pilih bulan"
+            showMonthYearPicker
             isClearable
             className="input"
             wrapperClassName="w-full"
             portalId="root"
             popperPlacement="bottom-start"
             popperClassName="z-[70]"
-            maxDate={endDate ? parseDateValue(endDate) : undefined}
-          />
-          <DatePicker
-            selected={parseDateValue(endDate)}
-            onChange={(value) => {
-              setEndDate(formatDateValue(value))
-              setPage(1)
-            }}
-            dateFormat="yyyy-MM-dd"
-            placeholderText="Tanggal akhir"
-            isClearable
-            className="input"
-            wrapperClassName="w-full"
-            portalId="root"
-            popperPlacement="bottom-start"
-            popperClassName="z-[70]"
-            minDate={startDate ? parseDateValue(startDate) : undefined}
           />
           <button
             type="button"
             className="btn-secondary self-start"
             onClick={() => {
-              setStartDate('')
-              setEndDate('')
+              setFilterMonth('')
               setPage(1)
             }}
           >
-            Reset Tanggal
+            Reset Bulan
           </button>
         </div>
-        <p className="mt-2 text-xs text-slate-500">Gunakan kalender untuk membandingkan margin per bulan/periode.</p>
+        <p className="mt-2 text-xs text-slate-500">Pilih bulan untuk melihat total modal, omzet, dan margin periode itu.</p>
       </div>
 
       {stats ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
           <div className="card p-4">
             <p className="text-xs text-slate-500">Total Transaksi</p>
             <p className="text-xl font-bold text-slate-800">{formatNumber(stats.total_transactions)}</p>
+          </div>
+          <div className="card p-4">
+            <p className="text-xs text-slate-500">Total Modal</p>
+            <p className="text-xl font-bold text-slate-800">{formatCurrency(stats.total_purchase)}</p>
           </div>
           <div className="card p-4">
             <p className="text-xs text-slate-500">Total Omzet</p>

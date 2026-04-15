@@ -98,6 +98,29 @@ const normalizeDateInput = (value) => {
   return null
 }
 
+const normalizeMonthInput = (value) => {
+  if (!value) return null
+  const s = String(value).trim()
+  if (!s) return null
+  if (/^\d{4}-\d{2}$/.test(s)) return s
+  return null
+}
+
+const getMonthDateRange = (monthValue) => {
+  const normalized = normalizeMonthInput(monthValue)
+  if (!normalized) return null
+  const [yearText, monthText] = normalized.split('-')
+  const year = Number(yearText)
+  const month = Number(monthText)
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return null
+
+  const startDate = `${normalized}-01`
+  const nextYear = month === 12 ? year + 1 : year
+  const nextMonth = month === 12 ? 1 : month + 1
+  const endDateExclusive = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+  return { startDate, endDateExclusive }
+}
+
 const getProductAveragePurchasePrice = async (connection, productId, upToDate = null) => {
   const product = await getProductById(connection, productId)
   const fallbackPrice = Number(product?.purchase_price || 0)
@@ -123,68 +146,6 @@ const getProductAveragePurchasePrice = async (connection, productId, upToDate = 
   const totalCost = Number(rows[0]?.total_cost || 0)
   if (totalQty <= 0 || totalCost <= 0) return fallbackPrice
   return totalCost / totalQty
-}
-
-/**
- * Rumus client:
- * harga modal per produk pada suatu hasil filter =
- * (total nilai incoming sampai cutoff) / (total qty outgoing pada hasil filter).
- */
-const getClientFilteredPurchasePriceMap = async (connection, { where, params, endDate }) => {
-  const map = new Map()
-  const [groupRows] = await connection.execute(
-    `
-    SELECT
-      og.product_id,
-      COALESCE(SUM(og.quantity), 0) AS outgoing_qty,
-      MAX(og.transaction_date) AS max_transaction_date
-    FROM outgoing_goods og
-    JOIN products p ON p.id = og.product_id
-    ${where}
-    GROUP BY og.product_id
-    `,
-    params,
-  )
-  if (!groupRows.length) return map
-
-  const productIds = groupRows.map((row) => Number(row.product_id)).filter((id) => Number.isFinite(id) && id > 0)
-  const placeholders = productIds.map(() => '?').join(',')
-  const [productRows] = await connection.execute(
-    `SELECT id, purchase_price FROM products WHERE id IN (${placeholders})`,
-    productIds,
-  )
-  const fallbackById = new Map(productRows.map((row) => [Number(row.id), Number(row.purchase_price || 0)]))
-  const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
-  const normalizedEndDate = normalizeDateInput(endDate)
-
-  for (const row of groupRows) {
-    const productId = Number(row.product_id)
-    const outgoingQty = Number(row.outgoing_qty || 0)
-    const fallback = fallbackById.get(productId) || 0
-
-    if (!hasIncomingPurchasePrice || outgoingQty <= 0) {
-      map.set(productId, fallback)
-      continue
-    }
-
-    const cutoffDate = normalizedEndDate || normalizeDateInput(row.max_transaction_date)
-    const dateClause = cutoffDate ? 'AND transaction_date <= ?' : ''
-    const queryParams = cutoffDate ? [productId, cutoffDate] : [productId]
-    const [incomingRows] = await connection.execute(
-      `
-      SELECT COALESCE(SUM(quantity * purchase_price), 0) AS total_cost
-      FROM incoming_goods
-      WHERE product_id = ?
-        ${dateClause}
-      `,
-      queryParams,
-    )
-    const totalIncomingCost = Number(incomingRows[0]?.total_cost || 0)
-    const purchasePrice = totalIncomingCost > 0 ? totalIncomingCost / outgoingQty : fallback
-    map.set(productId, purchasePrice)
-  }
-
-  return map
 }
 
 const normalizeReferenceNo = (referenceNo) => {
@@ -1040,8 +1001,7 @@ app.get('/api/outgoing', async (req, res) => {
   const connection = await pool.getConnection()
   try {
     const search = (req.query.search || '').trim()
-    const startDate = normalizeDateInput(req.query.start_date)
-    const endDate = normalizeDateInput(req.query.end_date)
+    const monthRange = getMonthDateRange(req.query.month)
     const { page, limit } = parsePagination(req.query)
     const whereClauses = []
     const params = []
@@ -1050,13 +1010,9 @@ app.get('/api/outgoing', async (req, res) => {
       const searchValue = `%${search}%`
       params.push(searchValue, searchValue, searchValue)
     }
-    if (startDate) {
-      whereClauses.push('og.transaction_date >= ?')
-      params.push(startDate)
-    }
-    if (endDate) {
-      whereClauses.push('og.transaction_date <= ?')
-      params.push(endDate)
+    if (monthRange) {
+      whereClauses.push('(og.transaction_date >= ? AND og.transaction_date < ?)')
+      params.push(monthRange.startDate, monthRange.endDateExclusive)
     }
     const where = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : ''
 
@@ -1083,23 +1039,23 @@ app.get('/api/outgoing', async (req, res) => {
       [...params, meta.limit, meta.offset],
     )
 
-    const purchasePriceByProduct = await getClientFilteredPurchasePriceMap(connection, {
-      where,
-      params,
-      endDate,
-    })
-
     res.json({
-      data: rows.map((row) => {
-        const qty = Number(row.quantity || 0)
-        const livePurchasePrice = purchasePriceByProduct.get(Number(row.product_id)) ?? Number(row.purchase_price || 0)
-        return {
-          ...row,
-          purchase_price: livePurchasePrice,
-          total_purchase: livePurchasePrice * qty,
-          total_selling: Number(row.selling_price || 0) * qty,
-        }
-      }),
+      data: await Promise.all(
+        rows.map(async (row) => {
+          const livePurchasePrice = await getProductAveragePurchasePrice(
+            connection,
+            row.product_id,
+            row.transaction_date,
+          )
+          const qty = Number(row.quantity || 0)
+          return {
+            ...row,
+            purchase_price: livePurchasePrice,
+            total_purchase: livePurchasePrice * qty,
+            total_selling: Number(row.selling_price || 0) * qty,
+          }
+        }),
+      ),
       meta: {
         page: meta.page,
         limit: meta.limit,
@@ -1299,18 +1255,13 @@ app.delete('/api/outgoing/:id', async (req, res) => {
 app.get('/api/bookkeeping', async (req, res) => {
   const connection = await pool.getConnection()
   try {
-    const startDate = normalizeDateInput(req.query.start_date)
-    const endDate = normalizeDateInput(req.query.end_date)
+    const monthRange = getMonthDateRange(req.query.month)
     const { page, limit } = parsePagination(req.query)
     const whereClauses = []
     const whereParams = []
-    if (startDate) {
-      whereClauses.push('og.transaction_date >= ?')
-      whereParams.push(startDate)
-    }
-    if (endDate) {
-      whereClauses.push('og.transaction_date <= ?')
-      whereParams.push(endDate)
+    if (monthRange) {
+      whereClauses.push('(og.transaction_date >= ? AND og.transaction_date < ?)')
+      whereParams.push(monthRange.startDate, monthRange.endDateExclusive)
     }
     const where = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : ''
 
@@ -1345,22 +1296,18 @@ app.get('/api/bookkeeping', async (req, res) => {
       [...whereParams, meta.limit, meta.offset],
     )
 
-    const purchasePriceByProduct = await getClientFilteredPurchasePriceMap(connection, {
-      where,
-      params: whereParams,
-      endDate,
-    })
-
-    const data = rows.map((row) => {
-      const qty = Number(row.quantity || 0)
-      const livePurchase = purchasePriceByProduct.get(Number(row.product_id)) ?? Number(row.purchase_price || 0)
-      const margin = (Number(row.selling_price || 0) - Number(row.discount || 0) - livePurchase) * qty
-      return {
-        ...row,
-        purchase_price: livePurchase,
-        margin,
-      }
-    })
+    const data = await Promise.all(
+      rows.map(async (row) => {
+        const qty = Number(row.quantity || 0)
+        const livePurchase = await getProductAveragePurchasePrice(connection, row.product_id, row.transaction_date)
+        const margin = (Number(row.selling_price || 0) - Number(row.discount || 0) - livePurchase) * qty
+        return {
+          ...row,
+          purchase_price: livePurchase,
+          margin,
+        }
+      }),
+    )
 
     const [statRows] = await connection.execute(
       `
@@ -1368,24 +1315,32 @@ app.get('/api/bookkeeping', async (req, res) => {
         og.product_id,
         og.quantity,
         og.selling_price,
-        og.discount
+        og.discount,
+        og.transaction_date
       FROM outgoing_goods og
       ${where}
       `,
       whereParams,
     )
-    const stats = statRows.reduce(
+    const statsRows = await Promise.all(
+      statRows.map(async (row) => {
+        const purchase = await getProductAveragePurchasePrice(connection, row.product_id, row.transaction_date)
+        return { ...row, _purchase: purchase }
+      }),
+    )
+    const stats = statsRows.reduce(
       (acc, row) => {
         const qty = Number(row.quantity || 0)
         const selling = Number(row.selling_price || 0)
         const discount = Number(row.discount || 0)
-        const purchase = purchasePriceByProduct.get(Number(row.product_id)) ?? 0
+        const purchase = Number(row._purchase || 0)
         acc.total_transactions += 1
+        acc.total_purchase += purchase * qty
         acc.total_revenue += selling * qty
         acc.total_margin += (selling - discount - purchase) * qty
         return acc
       },
-      { total_transactions: 0, total_revenue: 0, total_margin: 0 },
+      { total_transactions: 0, total_purchase: 0, total_revenue: 0, total_margin: 0 },
     )
 
     res.json({

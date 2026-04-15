@@ -48,6 +48,7 @@ const formatProductOptionLabel = (option) => {
 }
 
 const parseDateValue = (value) => (value ? new Date(`${value}T00:00:00`) : null)
+const parseMonthValue = (value) => (value ? new Date(`${value}-01T00:00:00`) : null)
 
 const formatDateValue = (value) => {
   if (!value) return ''
@@ -57,11 +58,17 @@ const formatDateValue = (value) => {
   return `${year}-${month}-${day}`
 }
 
+const formatMonthValue = (value) => {
+  if (!value) return ''
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  return `${year}-${month}`
+}
+
 export default function OutgoingPage({ products, onChanged }) {
   const [rows, setRows] = useState([])
   const [search, setSearch] = useState('')
-  const [startDate, setStartDate] = useState('')
-  const [endDate, setEndDate] = useState('')
+  const [filterMonth, setFilterMonth] = useState('')
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(20)
@@ -98,8 +105,7 @@ export default function OutgoingPage({ products, onChanged }) {
         search,
         page,
         limit,
-        start_date: startDate || undefined,
-        end_date: endDate || undefined,
+        month: filterMonth || undefined,
       })
       setRows(data.data)
       setTotalPages(data.meta?.total_pages || 1)
@@ -116,7 +122,7 @@ export default function OutgoingPage({ products, onChanged }) {
 
   useEffect(() => {
     loadData()
-  }, [search, page, limit, startDate, endDate])
+  }, [search, page, limit, filterMonth])
 
   const resetForm = () => {
     setEditing(null)
@@ -234,52 +240,35 @@ export default function OutgoingPage({ products, onChanged }) {
               Tambah Barang Keluar
             </button>
           </div>
-          <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
             <DatePicker
-              selected={parseDateValue(startDate)}
+              selected={parseMonthValue(filterMonth)}
               onChange={(value) => {
-                setStartDate(formatDateValue(value))
+                setFilterMonth(formatMonthValue(value))
                 setPage(1)
               }}
-              dateFormat="yyyy-MM-dd"
-              placeholderText="Tanggal awal"
+              dateFormat="MM/yyyy"
+              placeholderText="Pilih bulan"
+              showMonthYearPicker
               isClearable
               className="input"
               wrapperClassName="w-full"
               portalId="root"
               popperPlacement="bottom-start"
               popperClassName="z-[70]"
-              maxDate={endDate ? parseDateValue(endDate) : undefined}
-            />
-            <DatePicker
-              selected={parseDateValue(endDate)}
-              onChange={(value) => {
-                setEndDate(formatDateValue(value))
-                setPage(1)
-              }}
-              dateFormat="yyyy-MM-dd"
-              placeholderText="Tanggal akhir"
-              isClearable
-              className="input"
-              wrapperClassName="w-full"
-              portalId="root"
-              popperPlacement="bottom-start"
-              popperClassName="z-[70]"
-              minDate={startDate ? parseDateValue(startDate) : undefined}
             />
             <button
               type="button"
               className="btn-secondary self-start"
               onClick={() => {
-                setStartDate('')
-                setEndDate('')
+                setFilterMonth('')
                 setPage(1)
               }}
             >
-              Reset Tanggal
+              Reset Bulan
             </button>
           </div>
-          <p className="text-xs text-slate-500">Filter tanggal untuk lihat transaksi/margin per periode.</p>
+          <p className="text-xs text-slate-500">Filter per bulan untuk lihat modal/penjualan periode tersebut.</p>
         </div>
       </div>
 
