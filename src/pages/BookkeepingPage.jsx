@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Pencil } from 'lucide-react'
+import DatePicker from 'react-datepicker'
 import { apiService } from '../utils/api'
 import Modal from '../components/Modal'
 import ApiPagination from '../components/ApiPagination'
@@ -9,13 +10,26 @@ import { formatCurrency, formatDate, formatNumber } from '../utils/format'
 const initialForm = {
   outgoing_id: '',
   product_id: '',
+  transaction_date: '',
   selling_price: 0,
   discount: 0,
+}
+
+const parseDateValue = (value) => (value ? new Date(`${value}T00:00:00`) : null)
+
+const formatDateValue = (value) => {
+  if (!value) return ''
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 export default function BookkeepingPage({ onChanged }) {
   const [rows, setRows] = useState([])
   const [stats, setStats] = useState(null)
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(20)
@@ -26,14 +40,16 @@ export default function BookkeepingPage({ onChanged }) {
   const [costPreview, setCostPreview] = useState({ average_purchase_price: 0 })
   const [loadingCostPreview, setLoadingCostPreview] = useState(false)
 
-  const loadCostPreview = async (productId) => {
+  const loadCostPreview = async (productId, transactionDate) => {
     if (!productId) {
       setCostPreview({ average_purchase_price: 0 })
       return
     }
     try {
       setLoadingCostPreview(true)
-      const { data } = await apiService.getProductCost(productId)
+      const { data } = await apiService.getProductCost(productId, {
+        transaction_date: transactionDate || undefined,
+      })
       setCostPreview(data)
     } catch (error) {
       notifyError(error.response?.data?.message || 'Gagal mengambil ringkasan harga beli')
@@ -46,7 +62,12 @@ export default function BookkeepingPage({ onChanged }) {
   const loadData = async () => {
     try {
       setLoading(true)
-      const { data } = await apiService.getBookkeeping({ page, limit })
+      const { data } = await apiService.getBookkeeping({
+        page,
+        limit,
+        start_date: startDate || undefined,
+        end_date: endDate || undefined,
+      })
       setRows(data.data)
       setStats(data.stats)
       setTotalPages(data.meta?.total_pages || 1)
@@ -63,13 +84,13 @@ export default function BookkeepingPage({ onChanged }) {
 
   useEffect(() => {
     loadData()
-  }, [page, limit])
+  }, [page, limit, startDate, endDate])
 
   useEffect(() => {
     if (modalOpen && form.product_id) {
-      loadCostPreview(form.product_id)
+      loadCostPreview(form.product_id, form.transaction_date)
     }
-  }, [modalOpen, form.product_id])
+  }, [modalOpen, form.product_id, form.transaction_date])
 
   const closeModal = () => {
     setModalOpen(false)
@@ -96,6 +117,49 @@ export default function BookkeepingPage({ onChanged }) {
 
   return (
     <div className="space-y-4">
+      <div className="card p-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <DatePicker
+            selected={parseDateValue(startDate)}
+            onChange={(value) => {
+              setStartDate(formatDateValue(value))
+              setPage(1)
+            }}
+            dateFormat="yyyy-MM-dd"
+            placeholderText="Tanggal awal"
+            isClearable
+            className="input"
+            wrapperClassName="w-full"
+            maxDate={endDate ? parseDateValue(endDate) : undefined}
+          />
+          <DatePicker
+            selected={parseDateValue(endDate)}
+            onChange={(value) => {
+              setEndDate(formatDateValue(value))
+              setPage(1)
+            }}
+            dateFormat="yyyy-MM-dd"
+            placeholderText="Tanggal akhir"
+            isClearable
+            className="input"
+            wrapperClassName="w-full"
+            minDate={startDate ? parseDateValue(startDate) : undefined}
+          />
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => {
+              setStartDate('')
+              setEndDate('')
+              setPage(1)
+            }}
+          >
+            Reset Tanggal
+          </button>
+        </div>
+        <p className="mt-2 text-xs text-slate-500">Gunakan kalender untuk membandingkan margin per bulan/periode.</p>
+      </div>
+
       {stats ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <div className="card p-4">
@@ -161,6 +225,7 @@ export default function BookkeepingPage({ onChanged }) {
                           setForm({
                             outgoing_id: row.id,
                             product_id: row.product_id,
+                            transaction_date: row.transaction_date?.slice(0, 10) || '',
                             selling_price: row.selling_price || 0,
                             discount: row.discount || 0,
                           })

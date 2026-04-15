@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
 import AsyncSelect from 'react-select/async'
+import DatePicker from 'react-datepicker'
 import { apiService } from '../utils/api'
 import Modal from '../components/Modal'
 import ApiPagination from '../components/ApiPagination'
@@ -46,9 +47,21 @@ const formatProductOptionLabel = (option) => {
   )
 }
 
+const parseDateValue = (value) => (value ? new Date(`${value}T00:00:00`) : null)
+
+const formatDateValue = (value) => {
+  if (!value) return ''
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 export default function OutgoingPage({ products, onChanged }) {
   const [rows, setRows] = useState([])
   const [search, setSearch] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(20)
@@ -81,7 +94,13 @@ export default function OutgoingPage({ products, onChanged }) {
   const loadData = async () => {
     try {
       setLoading(true)
-      const { data } = await apiService.getOutgoing({ search, page, limit })
+      const { data } = await apiService.getOutgoing({
+        search,
+        page,
+        limit,
+        start_date: startDate || undefined,
+        end_date: endDate || undefined,
+      })
       setRows(data.data)
       setTotalPages(data.meta?.total_pages || 1)
       setTotalItems(data.meta?.total_items || 0)
@@ -97,7 +116,7 @@ export default function OutgoingPage({ products, onChanged }) {
 
   useEffect(() => {
     loadData()
-  }, [search, page, limit])
+  }, [search, page, limit, startDate, endDate])
 
   const resetForm = () => {
     setEditing(null)
@@ -120,14 +139,16 @@ export default function OutgoingPage({ products, onChanged }) {
     }
   }
 
-  const loadCostPreview = async (productId) => {
+  const loadCostPreview = async (productId, transactionDate) => {
     if (!productId) {
       setCostPreview({ average_purchase_price: 0 })
       return
     }
     try {
       setLoadingCostPreview(true)
-      const { data } = await apiService.getProductCost(productId)
+      const { data } = await apiService.getProductCost(productId, {
+        transaction_date: transactionDate || undefined,
+      })
       setCostPreview(data)
     } catch (error) {
       notifyError(error.response?.data?.message || 'Gagal mengambil ringkasan harga modal')
@@ -139,9 +160,9 @@ export default function OutgoingPage({ products, onChanged }) {
 
   useEffect(() => {
     if (modalOpen) {
-      loadCostPreview(form.product_id)
+      loadCostPreview(form.product_id, form.transaction_date)
     }
-  }, [form.product_id, modalOpen])
+  }, [form.product_id, form.transaction_date, modalOpen])
 
   const submitForm = async (event) => {
     event.preventDefault()
@@ -188,29 +209,71 @@ export default function OutgoingPage({ products, onChanged }) {
   return (
     <div className="space-y-4">
       <div className="card p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <input
-            className="input sm:w-80"
-            placeholder="Cari transaksi..."
-            value={search}
-            onChange={(event) => {
-              setSearch(event.target.value)
-              setPage(1)
-            }}
-          />
-          <button
-            className="btn-primary"
-            onClick={() => {
-              setEditing(null)
-              setForm(initialForm)
-              setSelectedProduct(null)
-              setCostPreview({ average_purchase_price: 0 })
-              setModalOpen(true)
-            }}
-          >
-            <Plus size={16} />
-            Tambah Barang Keluar
-          </button>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <input
+              className="input sm:w-80"
+              placeholder="Cari transaksi..."
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value)
+                setPage(1)
+              }}
+            />
+            <button
+              className="btn-primary"
+              onClick={() => {
+                setEditing(null)
+                setForm(initialForm)
+                setSelectedProduct(null)
+                setCostPreview({ average_purchase_price: 0 })
+                setModalOpen(true)
+              }}
+            >
+              <Plus size={16} />
+              Tambah Barang Keluar
+            </button>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <DatePicker
+              selected={parseDateValue(startDate)}
+              onChange={(value) => {
+                setStartDate(formatDateValue(value))
+                setPage(1)
+              }}
+              dateFormat="yyyy-MM-dd"
+              placeholderText="Tanggal awal"
+              isClearable
+              className="input"
+              wrapperClassName="w-full"
+              maxDate={endDate ? parseDateValue(endDate) : undefined}
+            />
+            <DatePicker
+              selected={parseDateValue(endDate)}
+              onChange={(value) => {
+                setEndDate(formatDateValue(value))
+                setPage(1)
+              }}
+              dateFormat="yyyy-MM-dd"
+              placeholderText="Tanggal akhir"
+              isClearable
+              className="input"
+              wrapperClassName="w-full"
+              minDate={startDate ? parseDateValue(startDate) : undefined}
+            />
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => {
+                setStartDate('')
+                setEndDate('')
+                setPage(1)
+              }}
+            >
+              Reset Tanggal
+            </button>
+          </div>
+          <p className="text-xs text-slate-500">Filter tanggal untuk lihat transaksi/margin per periode.</p>
         </div>
       </div>
 
@@ -362,11 +425,12 @@ export default function OutgoingPage({ products, onChanged }) {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs text-slate-500">Tanggal</label>
-              <input
-                type="date"
+              <DatePicker
+                selected={parseDateValue(form.transaction_date)}
+                onChange={(value) => setForm({ ...form, transaction_date: formatDateValue(value) })}
+                dateFormat="yyyy-MM-dd"
                 className="input"
-                value={form.transaction_date}
-                onChange={(event) => setForm({ ...form, transaction_date: event.target.value })}
+                wrapperClassName="w-full"
                 required
               />
             </div>

@@ -28,7 +28,7 @@ export const apiService = {
   deleteUser: (id) => api.delete(`/users/${id}`),
 
   getProducts: (params) => api.get('/products', { params }),
-  getProductCost: (id) => api.get(`/products/${id}/cost`),
+  getProductCost: (id, params) => api.get(`/products/${id}/cost`, { params }),
   createProduct: (payload) => api.post('/products', payload),
   updateProduct: (id, payload) => api.put(`/products/${id}`, payload),
   deleteProduct: (id) => api.delete(`/products/${id}`),
