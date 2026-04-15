@@ -121,15 +121,36 @@ const getMonthDateRange = (monthValue) => {
   return { startDate, endDateExclusive }
 }
 
-const getProductAveragePurchasePrice = async (connection, productId, upToDate = null) => {
+const getProductAveragePurchasePrice = async (
+  connection,
+  productId,
+  upToDate = null,
+  periodStartDate = null,
+  periodEndDateExclusive = null,
+) => {
   const product = await getProductById(connection, productId)
   const fallbackPrice = Number(product?.purchase_price || 0)
   const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
   if (!hasIncomingPurchasePrice) return fallbackPrice
 
   const validDate = normalizeDateInput(upToDate)
-  const dateClause = validDate ? 'AND transaction_date <= ?' : ''
-  const queryParams = validDate ? [productId, validDate] : [productId]
+  const validPeriodStart = normalizeDateInput(periodStartDate)
+  const validPeriodEndExclusive = normalizeDateInput(periodEndDateExclusive)
+  const dateClauses = []
+  const queryParams = [productId]
+  if (validDate) {
+    dateClauses.push('transaction_date <= ?')
+    queryParams.push(validDate)
+  }
+  if (validPeriodStart) {
+    dateClauses.push('transaction_date >= ?')
+    queryParams.push(validPeriodStart)
+  }
+  if (validPeriodEndExclusive) {
+    dateClauses.push('transaction_date < ?')
+    queryParams.push(validPeriodEndExclusive)
+  }
+  const extraDateWhere = dateClauses.length ? `AND ${dateClauses.join(' AND ')}` : ''
   const [rows] = await connection.execute(
     `
     SELECT
@@ -137,7 +158,7 @@ const getProductAveragePurchasePrice = async (connection, productId, upToDate = 
       COALESCE(SUM(quantity * purchase_price), 0) AS total_cost
     FROM incoming_goods
     WHERE product_id = ?
-      ${dateClause}
+      ${extraDateWhere}
     `,
     queryParams,
   )
@@ -1046,6 +1067,8 @@ app.get('/api/outgoing', async (req, res) => {
             connection,
             row.product_id,
             row.transaction_date,
+            monthRange?.startDate || null,
+            monthRange?.endDateExclusive || null,
           )
           const qty = Number(row.quantity || 0)
           return {
@@ -1299,7 +1322,13 @@ app.get('/api/bookkeeping', async (req, res) => {
     const data = await Promise.all(
       rows.map(async (row) => {
         const qty = Number(row.quantity || 0)
-        const livePurchase = await getProductAveragePurchasePrice(connection, row.product_id, row.transaction_date)
+        const livePurchase = await getProductAveragePurchasePrice(
+          connection,
+          row.product_id,
+          row.transaction_date,
+          monthRange?.startDate || null,
+          monthRange?.endDateExclusive || null,
+        )
         const margin = (Number(row.selling_price || 0) - Number(row.discount || 0) - livePurchase) * qty
         return {
           ...row,
@@ -1324,7 +1353,13 @@ app.get('/api/bookkeeping', async (req, res) => {
     )
     const statsRows = await Promise.all(
       statRows.map(async (row) => {
-        const purchase = await getProductAveragePurchasePrice(connection, row.product_id, row.transaction_date)
+        const purchase = await getProductAveragePurchasePrice(
+          connection,
+          row.product_id,
+          row.transaction_date,
+          monthRange?.startDate || null,
+          monthRange?.endDateExclusive || null,
+        )
         return { ...row, _purchase: purchase }
       }),
     )

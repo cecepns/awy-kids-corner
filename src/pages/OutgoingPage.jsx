@@ -85,19 +85,6 @@ export default function OutgoingPage({ products, onChanged }) {
     [products],
   )
 
-  const summary = useMemo(
-    () =>
-      rows.reduce(
-        (acc, row) => {
-          acc.totalPurchase += Number(row.total_purchase || 0)
-          acc.totalSelling += Number(row.total_selling || 0)
-          return acc
-        },
-        { totalPurchase: 0, totalSelling: 0 },
-      ),
-    [rows],
-  )
-
   const loadData = async () => {
     try {
       setLoading(true)
@@ -269,17 +256,6 @@ export default function OutgoingPage({ products, onChanged }) {
             </button>
           </div>
           <p className="text-xs text-slate-500">Filter per bulan untuk lihat modal/penjualan periode tersebut.</p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="card p-4">
-          <p className="text-xs text-slate-500">Total Modal (halaman ini)</p>
-          <p className="text-xl font-bold text-slate-800">{formatCurrency(summary.totalPurchase)}</p>
-        </div>
-        <div className="card p-4">
-          <p className="text-xs text-slate-500">Total Penjualan (halaman ini)</p>
-          <p className="text-xl font-bold text-slate-800">{formatCurrency(summary.totalSelling)}</p>
         </div>
       </div>
 
