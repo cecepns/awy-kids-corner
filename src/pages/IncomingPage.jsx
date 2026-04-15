@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
 import AsyncSelect from 'react-select/async'
+import DatePicker from 'react-datepicker'
 import { apiService } from '../utils/api'
 import Modal from '../components/Modal'
 import ApiPagination from '../components/ApiPagination'
@@ -44,6 +45,16 @@ const formatProductOptionLabel = (option) => {
       <span style={{ color: stockMeta.color, fontWeight: 600 }}>{stockMeta.text}</span>
     </div>
   )
+}
+
+const parseDateValue = (value) => (value ? new Date(`${value}T00:00:00`) : null)
+
+const formatDateValue = (value) => {
+  if (!value) return ''
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 export default function IncomingPage({ products, onChanged }) {
@@ -301,11 +312,12 @@ export default function IncomingPage({ products, onChanged }) {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs text-slate-500">Tanggal</label>
-              <input
-                type="date"
+              <DatePicker
+                selected={parseDateValue(form.transaction_date)}
+                onChange={(value) => setForm({ ...form, transaction_date: formatDateValue(value) })}
+                dateFormat="yyyy-MM-dd"
                 className="input"
-                value={form.transaction_date}
-                onChange={(event) => setForm({ ...form, transaction_date: event.target.value })}
+                wrapperClassName="w-full"
                 required
               />
             </div>
