@@ -106,6 +106,14 @@ const normalizeMonthInput = (value) => {
   return null
 }
 
+const isTruthyFlag = (value) => {
+  if (value === true || value === 1) return true
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes'
+}
+
 const getMonthDateRange = (monthValue) => {
   const normalized = normalizeMonthInput(monthValue)
   if (!normalized) return null
@@ -836,14 +844,21 @@ app.get('/api/products/:id/cost', async (req, res) => {
 app.get('/api/incoming', async (req, res) => {
   try {
     const search = (req.query.search || '').trim()
+    const monthRange = getMonthDateRange(req.query.month)
+    const isExport = isTruthyFlag(req.query.export)
     const { page, limit } = parsePagination(req.query)
-    let where = ''
+    const whereClauses = []
     const params = []
     if (search) {
-      where = 'WHERE p.code LIKE ? OR p.name LIKE ? OR ig.reference_no LIKE ?'
+      whereClauses.push('(p.code LIKE ? OR p.name LIKE ? OR ig.reference_no LIKE ?)')
       const searchValue = `%${search}%`
       params.push(searchValue, searchValue, searchValue)
     }
+    if (monthRange) {
+      whereClauses.push('(ig.transaction_date >= ? AND ig.transaction_date < ?)')
+      params.push(monthRange.startDate, monthRange.endDateExclusive)
+    }
+    const where = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : ''
 
     const [countRows] = await pool.execute(
       `
@@ -854,29 +869,35 @@ app.get('/api/incoming', async (req, res) => {
       `,
       params,
     )
-    const meta = buildPaginationMeta(page, limit, Number(countRows[0]?.total || 0))
+    const totalItems = Number(countRows[0]?.total || 0)
+    const meta = buildPaginationMeta(page, limit, totalItems)
 
-    const [rows] = await pool.execute(
-      `
+    const baseQuery = `
       SELECT ig.*, p.code AS product_code, p.name AS product_name
       FROM incoming_goods ig
       JOIN products p ON p.id = ig.product_id
       ${where}
       ORDER BY ig.transaction_date DESC, ig.id DESC
-      LIMIT ? OFFSET ?
-      `,
-      [...params, meta.limit, meta.offset],
-    )
+    `
+    const [rows] = isExport
+      ? await pool.execute(baseQuery, params)
+      : await pool.execute(
+          `
+          ${baseQuery}
+          LIMIT ? OFFSET ?
+          `,
+          [...params, meta.limit, meta.offset],
+        )
     res.json({
       data: rows.map((row) => ({
         ...row,
         total_purchase: Number(row.quantity || 0) * Number(row.purchase_price || 0),
       })),
       meta: {
-        page: meta.page,
-        limit: meta.limit,
-        total_items: meta.total_items,
-        total_pages: meta.total_pages,
+        page: isExport ? 1 : meta.page,
+        limit: isExport ? rows.length : meta.limit,
+        total_items: totalItems,
+        total_pages: isExport ? 1 : meta.total_pages,
       },
     })
   } catch (error) {
@@ -1023,6 +1044,7 @@ app.get('/api/outgoing', async (req, res) => {
   try {
     const search = (req.query.search || '').trim()
     const monthRange = getMonthDateRange(req.query.month)
+    const isExport = isTruthyFlag(req.query.export)
     const { page, limit } = parsePagination(req.query)
     const whereClauses = []
     const params = []
@@ -1046,19 +1068,25 @@ app.get('/api/outgoing', async (req, res) => {
       `,
       params,
     )
-    const meta = buildPaginationMeta(page, limit, Number(countRows[0]?.total || 0))
+    const totalItems = Number(countRows[0]?.total || 0)
+    const meta = buildPaginationMeta(page, limit, totalItems)
 
-    const [rows] = await connection.execute(
-      `
+    const baseQuery = `
       SELECT og.*, p.code AS product_code, p.name AS product_name
       FROM outgoing_goods og
       JOIN products p ON p.id = og.product_id
       ${where}
       ORDER BY og.transaction_date DESC, og.id DESC
-      LIMIT ? OFFSET ?
-      `,
-      [...params, meta.limit, meta.offset],
-    )
+    `
+    const [rows] = isExport
+      ? await connection.execute(baseQuery, params)
+      : await connection.execute(
+          `
+          ${baseQuery}
+          LIMIT ? OFFSET ?
+          `,
+          [...params, meta.limit, meta.offset],
+        )
 
     res.json({
       data: await Promise.all(
@@ -1080,10 +1108,10 @@ app.get('/api/outgoing', async (req, res) => {
         }),
       ),
       meta: {
-        page: meta.page,
-        limit: meta.limit,
-        total_items: meta.total_items,
-        total_pages: meta.total_pages,
+        page: isExport ? 1 : meta.page,
+        limit: isExport ? rows.length : meta.limit,
+        total_items: totalItems,
+        total_pages: isExport ? 1 : meta.total_pages,
       },
     })
   } catch (error) {

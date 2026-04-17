@@ -1,12 +1,22 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Pencil, Trash2 } from 'lucide-react'
+import { Plus, Pencil, Trash2, Download } from 'lucide-react'
 import AsyncSelect from 'react-select/async'
 import DatePicker from 'react-datepicker'
+import * as XLSX from 'xlsx'
 import { apiService } from '../utils/api'
 import Modal from '../components/Modal'
 import ApiPagination from '../components/ApiPagination'
 import { confirmToast, notifyError, notifySuccess } from '../utils/toast'
-import { formatCurrency, formatDate, formatNumber } from '../utils/format'
+import {
+  formatCurrency,
+  formatDate,
+  formatNumber,
+  formatCalendarDateInput,
+  formatCalendarMonthInput,
+  getTodayCalendarYMD,
+  parseCalendarDateInput,
+  parseCalendarMonthInput,
+} from '../utils/format'
 
 const initialForm = {
   product_id: '',
@@ -14,7 +24,7 @@ const initialForm = {
   selling_price: 0,
   reference_no: '',
   notes: '',
-  transaction_date: new Date().toISOString().slice(0, 10),
+  transaction_date: getTodayCalendarYMD(),
 }
 
 const buildProductOption = (item) => ({
@@ -47,29 +57,12 @@ const formatProductOptionLabel = (option) => {
   )
 }
 
-const parseDateValue = (value) => (value ? new Date(`${value}T00:00:00`) : null)
-const parseMonthValue = (value) => (value ? new Date(`${value}-01T00:00:00`) : null)
-
-const formatDateValue = (value) => {
-  if (!value) return ''
-  const year = value.getFullYear()
-  const month = String(value.getMonth() + 1).padStart(2, '0')
-  const day = String(value.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-const formatMonthValue = (value) => {
-  if (!value) return ''
-  const year = value.getFullYear()
-  const month = String(value.getMonth() + 1).padStart(2, '0')
-  return `${year}-${month}`
-}
-
 export default function OutgoingPage({ products, onChanged }) {
   const [rows, setRows] = useState([])
   const [search, setSearch] = useState('')
   const [filterMonth, setFilterMonth] = useState('')
   const [loading, setLoading] = useState(true)
+  const [exporting, setExporting] = useState(false)
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(20)
   const [totalPages, setTotalPages] = useState(1)
@@ -110,6 +103,62 @@ export default function OutgoingPage({ products, onChanged }) {
   useEffect(() => {
     loadData()
   }, [search, page, limit, filterMonth])
+
+  const handleExport = async () => {
+    if (!filterMonth) {
+      notifyError('Pilih bulan terlebih dahulu sebelum export Excel')
+      return
+    }
+    try {
+      setExporting(true)
+      const { data } = await apiService.getOutgoing({
+        export: 1,
+        month: filterMonth,
+      })
+
+      const exportRows = data.data || []
+      if (!exportRows.length) {
+        notifyError('Tidak ada data barang keluar pada bulan yang dipilih')
+        return
+      }
+
+      const excelRows = exportRows.map((row) => ({
+        Tanggal: formatDate(row.transaction_date),
+        'Kode Produk': row.product_code,
+        'Nama Produk': row.product_name,
+        Jumlah: Number(row.quantity || 0),
+        'Harga Modal': Number(row.purchase_price || 0),
+        'Harga Jual': Number(row.selling_price || 0),
+        'Total Modal': Number(row.total_purchase || 0),
+        'Total Jual': Number(row.total_selling || 0),
+        Referensi: row.reference_no || '-',
+        Catatan: row.notes || '-',
+      }))
+
+      const worksheet = XLSX.utils.json_to_sheet(excelRows)
+      worksheet['!cols'] = [
+        { wch: 14 },
+        { wch: 16 },
+        { wch: 28 },
+        { wch: 10 },
+        { wch: 14 },
+        { wch: 14 },
+        { wch: 14 },
+        { wch: 14 },
+        { wch: 20 },
+        { wch: 26 },
+      ]
+
+      const workbook = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Barang Keluar')
+      XLSX.writeFile(workbook, `barang-keluar-${filterMonth}.xlsx`)
+      notifySuccess(`Export Excel barang keluar ${filterMonth} berhasil`)
+    } catch (error) {
+      notifyError(error.response?.data?.message || 'Gagal export Excel barang keluar')
+    } finally {
+      setExporting(false)
+    }
+  }
 
   const resetForm = () => {
     setEditing(null)
@@ -213,25 +262,36 @@ export default function OutgoingPage({ products, onChanged }) {
                 setPage(1)
               }}
             />
-            <button
-              className="btn-primary"
-              onClick={() => {
-                setEditing(null)
-                setForm(initialForm)
-                setSelectedProduct(null)
-                setCostPreview({ average_purchase_price: 0 })
-                setModalOpen(true)
-              }}
-            >
-              <Plus size={16} />
-              Tambah Barang Keluar
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={handleExport}
+                disabled={exporting}
+              >
+                <Download size={16} />
+                {exporting ? 'Export...' : 'Export Excel'}
+              </button>
+              <button
+                className="btn-primary"
+                onClick={() => {
+                  setEditing(null)
+                  setForm(initialForm)
+                  setSelectedProduct(null)
+                  setCostPreview({ average_purchase_price: 0 })
+                  setModalOpen(true)
+                }}
+              >
+                <Plus size={16} />
+                Tambah Barang Keluar
+              </button>
+            </div>
           </div>
           <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
             <DatePicker
-              selected={parseMonthValue(filterMonth)}
+              selected={parseCalendarMonthInput(filterMonth)}
               onChange={(value) => {
-                setFilterMonth(formatMonthValue(value))
+                setFilterMonth(formatCalendarMonthInput(value))
                 setPage(1)
               }}
               dateFormat="MM/yyyy"
@@ -397,8 +457,10 @@ export default function OutgoingPage({ products, onChanged }) {
             <div>
               <label className="mb-1 block text-xs text-slate-500">Tanggal</label>
               <DatePicker
-                selected={parseDateValue(form.transaction_date)}
-                onChange={(value) => setForm({ ...form, transaction_date: formatDateValue(value) })}
+                selected={parseCalendarDateInput(form.transaction_date)}
+                onChange={(value) =>
+                  setForm({ ...form, transaction_date: formatCalendarDateInput(value) })
+                }
                 dateFormat="yyyy-MM-dd"
                 className="input"
                 wrapperClassName="w-full"
