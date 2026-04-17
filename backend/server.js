@@ -20,6 +20,8 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME || 'awy_kids_corner_db',
   waitForConnections: true,
   connectionLimit: 10,
+  // Keep DATE/DATETIME as strings to avoid timezone shift (-1 day) in JSON serialization.
+  dateStrings: true,
 })
 
 const PAGINATION_LIMITS = [10, 20, 50, 100]
@@ -844,7 +846,8 @@ app.get('/api/products/:id/cost', async (req, res) => {
 app.get('/api/incoming', async (req, res) => {
   try {
     const search = (req.query.search || '').trim()
-    const monthRange = getMonthDateRange(req.query.month)
+    const exactDate = normalizeDateInput(req.query.date)
+    const monthRange = exactDate ? null : getMonthDateRange(req.query.month)
     const isExport = isTruthyFlag(req.query.export)
     const { page, limit } = parsePagination(req.query)
     const whereClauses = []
@@ -853,6 +856,10 @@ app.get('/api/incoming', async (req, res) => {
       whereClauses.push('(p.code LIKE ? OR p.name LIKE ? OR ig.reference_no LIKE ?)')
       const searchValue = `%${search}%`
       params.push(searchValue, searchValue, searchValue)
+    }
+    if (exactDate) {
+      whereClauses.push('ig.transaction_date = ?')
+      params.push(exactDate)
     }
     if (monthRange) {
       whereClauses.push('(ig.transaction_date >= ? AND ig.transaction_date < ?)')
@@ -1043,7 +1050,8 @@ app.get('/api/outgoing', async (req, res) => {
   const connection = await pool.getConnection()
   try {
     const search = (req.query.search || '').trim()
-    const monthRange = getMonthDateRange(req.query.month)
+    const exactDate = normalizeDateInput(req.query.date)
+    const monthRange = exactDate ? null : getMonthDateRange(req.query.month)
     const isExport = isTruthyFlag(req.query.export)
     const { page, limit } = parsePagination(req.query)
     const whereClauses = []
@@ -1052,6 +1060,10 @@ app.get('/api/outgoing', async (req, res) => {
       whereClauses.push('(p.code LIKE ? OR p.name LIKE ? OR og.reference_no LIKE ?)')
       const searchValue = `%${search}%`
       params.push(searchValue, searchValue, searchValue)
+    }
+    if (exactDate) {
+      whereClauses.push('og.transaction_date = ?')
+      params.push(exactDate)
     }
     if (monthRange) {
       whereClauses.push('(og.transaction_date >= ? AND og.transaction_date < ?)')

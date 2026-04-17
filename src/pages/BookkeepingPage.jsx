@@ -5,7 +5,13 @@ import { apiService } from '../utils/api'
 import Modal from '../components/Modal'
 import ApiPagination from '../components/ApiPagination'
 import { notifyError, notifySuccess } from '../utils/toast'
-import { formatCurrency, formatDate, formatNumber } from '../utils/format'
+import {
+  formatCurrency,
+  formatDate,
+  formatNumber,
+  formatCalendarMonthInput,
+  parseCalendarMonthInput,
+} from '../utils/format'
 
 const initialForm = {
   outgoing_id: '',
@@ -14,24 +20,6 @@ const initialForm = {
   purchase_price: 0,
   selling_price: 0,
   discount: 0,
-}
-
-const parseDateValue = (value) => (value ? new Date(`${value}T00:00:00`) : null)
-const parseMonthValue = (value) => (value ? new Date(`${value}-01T00:00:00`) : null)
-
-const formatDateValue = (value) => {
-  if (!value) return ''
-  const year = value.getFullYear()
-  const month = String(value.getMonth() + 1).padStart(2, '0')
-  const day = String(value.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-const formatMonthValue = (value) => {
-  if (!value) return ''
-  const year = value.getFullYear()
-  const month = String(value.getMonth() + 1).padStart(2, '0')
-  return `${year}-${month}`
 }
 
 export default function BookkeepingPage({ onChanged }) {
@@ -99,9 +87,9 @@ export default function BookkeepingPage({ onChanged }) {
       <div className="card p-4">
         <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
           <DatePicker
-            selected={parseMonthValue(filterMonth)}
+            selected={parseCalendarMonthInput(filterMonth)}
             onChange={(value) => {
-              setFilterMonth(formatMonthValue(value))
+              setFilterMonth(formatCalendarMonthInput(value))
               setPage(1)
             }}
             dateFormat="MM/yyyy"

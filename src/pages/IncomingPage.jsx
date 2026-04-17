@@ -60,6 +60,7 @@ const formatProductOptionLabel = (option) => {
 export default function IncomingPage({ products, onChanged }) {
   const [rows, setRows] = useState([])
   const [search, setSearch] = useState('')
+  const [filterDate, setFilterDate] = useState('')
   const [filterMonth, setFilterMonth] = useState('')
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
@@ -84,7 +85,8 @@ export default function IncomingPage({ products, onChanged }) {
         search,
         page,
         limit,
-        month: filterMonth || undefined,
+        date: filterDate || undefined,
+        month: filterDate ? undefined : filterMonth || undefined,
       })
       setRows(data.data)
       setTotalPages(data.meta?.total_pages || 1)
@@ -101,23 +103,25 @@ export default function IncomingPage({ products, onChanged }) {
 
   useEffect(() => {
     loadData()
-  }, [search, page, limit, filterMonth])
+  }, [search, page, limit, filterMonth, filterDate])
 
   const handleExport = async () => {
-    if (!filterMonth) {
-      notifyError('Pilih bulan terlebih dahulu sebelum export Excel')
+    if (!filterDate && !filterMonth) {
+      notifyError('Pilih tanggal atau bulan terlebih dahulu sebelum export Excel')
       return
     }
     try {
       setExporting(true)
+      const periodLabel = filterDate || filterMonth
       const { data } = await apiService.getIncoming({
         export: 1,
-        month: filterMonth,
+        date: filterDate || undefined,
+        month: filterDate ? undefined : filterMonth || undefined,
       })
 
       const exportRows = data.data || []
       if (!exportRows.length) {
-        notifyError('Tidak ada data barang masuk pada bulan yang dipilih')
+        notifyError(`Tidak ada data barang masuk pada periode ${periodLabel}`)
         return
       }
 
@@ -146,8 +150,8 @@ export default function IncomingPage({ products, onChanged }) {
 
       const workbook = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(workbook, worksheet, 'Barang Masuk')
-      XLSX.writeFile(workbook, `barang-masuk-${filterMonth}.xlsx`)
-      notifySuccess(`Export Excel barang masuk ${filterMonth} berhasil`)
+      XLSX.writeFile(workbook, `barang-masuk-${periodLabel}.xlsx`)
+      notifySuccess(`Export Excel barang masuk ${periodLabel} berhasil`)
     } catch (error) {
       notifyError(error.response?.data?.message || 'Gagal export Excel barang masuk')
     } finally {
@@ -255,11 +259,28 @@ export default function IncomingPage({ products, onChanged }) {
               </button>
             </div>
           </div>
-          <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
+            <DatePicker
+              selected={parseCalendarDateInput(filterDate)}
+              onChange={(value) => {
+                setFilterDate(formatCalendarDateInput(value))
+                if (value) setFilterMonth('')
+                setPage(1)
+              }}
+              dateFormat="yyyy-MM-dd"
+              placeholderText="Pilih tanggal (harian)"
+              isClearable
+              className="input"
+              wrapperClassName="w-full"
+              portalId="root"
+              popperPlacement="bottom-start"
+              popperClassName="z-[70]"
+            />
             <DatePicker
               selected={parseCalendarMonthInput(filterMonth)}
               onChange={(value) => {
                 setFilterMonth(formatCalendarMonthInput(value))
+                if (value) setFilterDate('')
                 setPage(1)
               }}
               dateFormat="MM/yyyy"
@@ -276,6 +297,7 @@ export default function IncomingPage({ products, onChanged }) {
               type="button"
               className="btn-secondary self-start"
               onClick={() => {
+                setFilterDate('')
                 setFilterMonth('')
                 setPage(1)
               }}
@@ -284,7 +306,7 @@ export default function IncomingPage({ products, onChanged }) {
             </button>
           </div>
           <p className="text-xs text-slate-500">
-            Pilih bulan untuk filter data dan export ke Excel per bulan.
+            Pilih tanggal untuk export harian, atau pilih bulan untuk export bulanan.
           </p>
         </div>
       </div>
