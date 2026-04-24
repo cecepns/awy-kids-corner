@@ -121,12 +121,22 @@ export default function OutgoingPage({ products, onChanged }) {
       })
 
       const exportRows = data.data || []
-      if (!exportRows.length) {
+      const filteredRows = exportRows.filter((row) => {
+        const transactionDate = row.transaction_date?.slice(0, 10)
+        if (filterDate) {
+          return transactionDate === filterDate
+        }
+        if (filterMonth) {
+          return transactionDate?.startsWith(`${filterMonth}-`)
+        }
+        return true
+      })
+      if (!filteredRows.length) {
         notifyError(`Tidak ada data barang keluar pada periode ${periodLabel}`)
         return
       }
 
-      const excelRows = exportRows.map((row) => ({
+      const excelRows = filteredRows.map((row) => ({
         Tanggal: formatDate(row.transaction_date),
         'Kode Produk': row.product_code,
         'Nama Produk': row.product_name,
