@@ -5,7 +5,7 @@ export const USER_KEY = 'awy_kids_corner_user'
 
 const api = axios.create({
   // baseURL: import.meta.env.VITE_API_URL || 'http://localhost:5000/api',
-  baseURL: "https://api-inventory.isavralabel.com/awy-kids-corner/api",
+  baseURL: "https://api.kingcreativestudio.my.id/awy-kids-corner/api",
   timeout: 15000,
 })
 
