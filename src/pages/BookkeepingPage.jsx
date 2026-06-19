@@ -22,6 +22,21 @@ const initialForm = {
   discount: 0,
 }
 
+const normalizeSellingPrice = (value) => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+const getBookkeepingMargin = (row) => {
+  const sellingPrice = normalizeSellingPrice(row.selling_price)
+  if (sellingPrice <= 0) return 0
+
+  const qty = Number(row.quantity || 0)
+  const discount = Number(row.discount || 0)
+  const purchasePrice = Number(row.purchase_price || 0)
+  return (sellingPrice - discount - purchasePrice) * qty
+}
+
 export default function BookkeepingPage({ onChanged }) {
   const [rows, setRows] = useState([])
   const [stats, setStats] = useState(null)
@@ -70,8 +85,8 @@ export default function BookkeepingPage({ onChanged }) {
     try {
       await apiService.updateBookkeeping({
         outgoing_id: form.outgoing_id,
-        selling_price: form.selling_price,
-        discount: form.discount,
+        selling_price: normalizeSellingPrice(form.selling_price),
+        discount: Number(form.discount || 0),
       })
       notifySuccess('Pembukuan berhasil diperbarui')
       closeModal()
@@ -174,9 +189,9 @@ export default function BookkeepingPage({ onChanged }) {
                   </td>
                   <td className="px-3 py-2 text-right">{formatNumber(row.quantity)}</td>
                   <td className="px-3 py-2 text-right">{formatCurrency(row.purchase_price)}</td>
-                  <td className="px-3 py-2 text-right">{formatCurrency(row.selling_price)}</td>
+                  <td className="px-3 py-2 text-right">{formatCurrency(normalizeSellingPrice(row.selling_price))}</td>
                   <td className="px-3 py-2 text-right">{formatCurrency(row.discount)}</td>
-                  <td className="px-3 py-2 text-right font-semibold">{formatCurrency(row.margin)}</td>
+                  <td className="px-3 py-2 text-right font-semibold">{formatCurrency(getBookkeepingMargin(row))}</td>
                   <td className="px-3 py-2">
                     <div className="flex justify-end">
                       <button
@@ -187,7 +202,7 @@ export default function BookkeepingPage({ onChanged }) {
                             product_id: row.product_id,
                             transaction_date: row.transaction_date?.slice(0, 10) || '',
                             purchase_price: Number(row.purchase_price || 0),
-                            selling_price: row.selling_price || 0,
+                            selling_price: normalizeSellingPrice(row.selling_price),
                             discount: row.discount || 0,
                           })
                           setModalOpen(true)
@@ -234,8 +249,12 @@ export default function BookkeepingPage({ onChanged }) {
               className="input"
               min="0"
               value={form.selling_price}
-              onChange={(event) => setForm({ ...form, selling_price: Number(event.target.value) })}
-              required
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  selling_price: event.target.value === '' ? '' : Number(event.target.value),
+                })
+              }
             />
           </div>
           <div>

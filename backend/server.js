@@ -1107,8 +1107,6 @@ app.get('/api/outgoing', async (req, res) => {
             connection,
             row.product_id,
             row.transaction_date,
-            monthRange?.startDate || null,
-            monthRange?.endDateExclusive || null,
           )
           const qty = Number(row.quantity || 0)
           return {
@@ -1366,12 +1364,15 @@ app.get('/api/bookkeeping', async (req, res) => {
           connection,
           row.product_id,
           row.transaction_date,
-          monthRange?.startDate || null,
-          monthRange?.endDateExclusive || null,
         )
-        const margin = (Number(row.selling_price || 0) - Number(row.discount || 0) - livePurchase) * qty
+        const sellingPrice = Number(row.selling_price || 0)
+        const margin =
+          sellingPrice > 0
+            ? (sellingPrice - Number(row.discount || 0) - livePurchase) * qty
+            : 0
         return {
           ...row,
+          selling_price: sellingPrice > 0 ? row.selling_price : 0,
           purchase_price: livePurchase,
           margin,
         }
@@ -1397,8 +1398,6 @@ app.get('/api/bookkeeping', async (req, res) => {
           connection,
           row.product_id,
           row.transaction_date,
-          monthRange?.startDate || null,
-          monthRange?.endDateExclusive || null,
         )
         return { ...row, _purchase: purchase }
       }),
@@ -1412,7 +1411,7 @@ app.get('/api/bookkeeping', async (req, res) => {
         acc.total_transactions += 1
         acc.total_purchase += purchase * qty
         acc.total_revenue += selling * qty
-        acc.total_margin += (selling - discount - purchase) * qty
+        acc.total_margin += selling > 0 ? (selling - discount - purchase) * qty : 0
         return acc
       },
       { total_transactions: 0, total_purchase: 0, total_revenue: 0, total_margin: 0 },
