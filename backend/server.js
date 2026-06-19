@@ -97,7 +97,8 @@ const normalizeDateInput = (value) => {
   const s = String(value).trim()
   if (!s) return null
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
-  return null
+  const isoMatch = s.match(/^(\d{4}-\d{2}-\d{2})/)
+  return isoMatch ? isoMatch[1] : null
 }
 
 const normalizeMonthInput = (value) => {
@@ -131,23 +132,17 @@ const getMonthDateRange = (monthValue) => {
   return { startDate, endDateExclusive }
 }
 
-const getProductAveragePurchasePrice = async (
+const getIncomingCostSummary = async (
   connection,
   productId,
-  upToDate = null,
-  periodStartDate = null,
-  periodEndDateExclusive = null,
+  { upToDate = null, periodStartDate = null, periodEndDateExclusive = null } = {},
 ) => {
-  const product = await getProductById(connection, productId)
-  const fallbackPrice = Number(product?.purchase_price || 0)
-  const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
-  if (!hasIncomingPurchasePrice) return fallbackPrice
-
+  const dateClauses = []
+  const queryParams = [productId]
   const validDate = normalizeDateInput(upToDate)
   const validPeriodStart = normalizeDateInput(periodStartDate)
   const validPeriodEndExclusive = normalizeDateInput(periodEndDateExclusive)
-  const dateClauses = []
-  const queryParams = [productId]
+
   if (validDate) {
     dateClauses.push('transaction_date <= ?')
     queryParams.push(validDate)
@@ -160,6 +155,7 @@ const getProductAveragePurchasePrice = async (
     dateClauses.push('transaction_date < ?')
     queryParams.push(validPeriodEndExclusive)
   }
+
   const extraDateWhere = dateClauses.length ? `AND ${dateClauses.join(' AND ')}` : ''
   const [rows] = await connection.execute(
     `
@@ -173,10 +169,94 @@ const getProductAveragePurchasePrice = async (
     queryParams,
   )
 
-  const totalQty = Number(rows[0]?.total_qty || 0)
-  const totalCost = Number(rows[0]?.total_cost || 0)
-  if (totalQty <= 0 || totalCost <= 0) return fallbackPrice
-  return totalCost / totalQty
+  return {
+    totalQty: Number(rows[0]?.total_qty || 0),
+    totalCost: Number(rows[0]?.total_cost || 0),
+  }
+}
+
+/** Rata-rata tertimbang barang masuk per bulan kalender transaksi (bukan kumulatif dari awal). */
+const getProductAveragePurchasePrice = async (connection, productId, upToDate = null) => {
+  const product = await getProductById(connection, productId)
+  const fallbackPrice = Number(product?.purchase_price || 0)
+  const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
+  if (!hasIncomingPurchasePrice) return fallbackPrice
+
+  const validDate = normalizeDateInput(upToDate)
+  if (!validDate) {
+    const { totalQty, totalCost } = await getIncomingCostSummary(connection, productId)
+    if (totalQty <= 0 || totalCost <= 0) return fallbackPrice
+    return totalCost / totalQty
+  }
+
+  const monthRange = getMonthDateRange(validDate.slice(0, 7))
+  if (monthRange) {
+    const { totalQty, totalCost } = await getIncomingCostSummary(connection, productId, {
+      upToDate: validDate,
+      periodStartDate: monthRange.startDate,
+      periodEndDateExclusive: monthRange.endDateExclusive,
+    })
+    if (totalQty > 0 && totalCost > 0) return totalCost / totalQty
+  }
+
+  return fallbackPrice
+}
+
+const getProductPurchaseCostPreview = async (connection, productId, upToDate = null) => {
+  const product = await getProductById(connection, productId)
+  const fallbackPrice = Number(product?.purchase_price || 0)
+  const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
+  const validDate = normalizeDateInput(upToDate)
+
+  if (!hasIncomingPurchasePrice) {
+    return {
+      averagePurchasePrice: fallbackPrice,
+      totalQty: 0,
+      totalCost: 0,
+      cost_basis: 'product_fallback',
+      transaction_date: validDate,
+    }
+  }
+
+  if (!validDate) {
+    const { totalQty, totalCost } = await getIncomingCostSummary(connection, productId)
+    const averagePurchasePrice = totalQty > 0 && totalCost > 0 ? totalCost / totalQty : fallbackPrice
+    return {
+      averagePurchasePrice,
+      totalQty,
+      totalCost,
+      cost_basis: 'all_time',
+      transaction_date: null,
+    }
+  }
+
+  const monthRange = getMonthDateRange(validDate.slice(0, 7))
+  if (monthRange) {
+    const { totalQty, totalCost } = await getIncomingCostSummary(connection, productId, {
+      upToDate: validDate,
+      periodStartDate: monthRange.startDate,
+      periodEndDateExclusive: monthRange.endDateExclusive,
+    })
+    if (totalQty > 0 && totalCost > 0) {
+      return {
+        averagePurchasePrice: totalCost / totalQty,
+        totalQty,
+        totalCost,
+        cost_basis: 'monthly',
+        transaction_date: validDate,
+        period_start: monthRange.startDate,
+        period_end: validDate,
+      }
+    }
+  }
+
+  return {
+    averagePurchasePrice: fallbackPrice,
+    totalQty: 0,
+    totalCost: 0,
+    cost_basis: 'product_fallback',
+    transaction_date: validDate,
+  }
 }
 
 const normalizeReferenceNo = (referenceNo) => {
@@ -798,43 +878,17 @@ app.get('/api/products/:id/cost', async (req, res) => {
       return res.status(404).json({ message: 'Produk tidak ditemukan' })
     }
 
-    const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
-    const dateClause = transactionDate ? 'AND transaction_date <= ?' : ''
-    const queryParams = transactionDate ? [id, transactionDate] : [id]
-    const [summaryRows] = hasIncomingPurchasePrice
-      ? await connection.execute(
-          `
-          SELECT
-            COALESCE(SUM(quantity), 0) AS total_qty,
-            COALESCE(SUM(quantity * purchase_price), 0) AS total_cost
-          FROM incoming_goods
-          WHERE product_id = ?
-            ${dateClause}
-          `,
-          queryParams,
-        )
-      : await connection.execute(
-          `
-          SELECT
-            COALESCE(SUM(quantity), 0) AS total_qty,
-            0 AS total_cost
-          FROM incoming_goods
-          WHERE product_id = ?
-            ${dateClause}
-          `,
-          queryParams,
-        )
-    const totalQty = Number(summaryRows[0]?.total_qty || 0)
-    const totalCost = Number(summaryRows[0]?.total_cost || 0)
-    const fallbackPrice = Number(product.purchase_price || 0)
-    const averagePurchasePrice = totalQty > 0 && totalCost > 0 ? totalCost / totalQty : fallbackPrice
+    const preview = await getProductPurchaseCostPreview(connection, id, transactionDate)
 
     res.json({
       product_id: Number(id),
-      average_purchase_price: averagePurchasePrice,
-      total_incoming_qty: totalQty,
-      total_incoming_cost: totalCost,
-      transaction_date: transactionDate,
+      average_purchase_price: preview.averagePurchasePrice,
+      total_incoming_qty: preview.totalQty,
+      total_incoming_cost: preview.totalCost,
+      transaction_date: preview.transaction_date,
+      cost_basis: preview.cost_basis,
+      period_start: preview.period_start || null,
+      period_end: preview.period_end || null,
     })
   } catch (error) {
     res.status(500).json({ message: error.message })
