@@ -175,34 +175,13 @@ const getIncomingCostSummary = async (
   }
 }
 
-/** Rata-rata tertimbang barang masuk per bulan kalender transaksi (bukan kumulatif dari awal). */
-const getProductAveragePurchasePrice = async (connection, productId, upToDate = null) => {
-  const product = await getProductById(connection, productId)
-  const fallbackPrice = Number(product?.purchase_price || 0)
-  const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
-  if (!hasIncomingPurchasePrice) return fallbackPrice
-
-  const validDate = normalizeDateInput(upToDate)
-  if (!validDate) {
-    const { totalQty, totalCost } = await getIncomingCostSummary(connection, productId)
-    if (totalQty <= 0 || totalCost <= 0) return fallbackPrice
-    return totalCost / totalQty
-  }
-
-  const monthRange = getMonthDateRange(validDate.slice(0, 7))
-  if (monthRange) {
-    const { totalQty, totalCost } = await getIncomingCostSummary(connection, productId, {
-      upToDate: validDate,
-      periodStartDate: monthRange.startDate,
-      periodEndDateExclusive: monthRange.endDateExclusive,
-    })
-    if (totalQty > 0 && totalCost > 0) return totalCost / totalQty
-  }
-
-  return fallbackPrice
-}
-
-const getProductPurchaseCostPreview = async (connection, productId, upToDate = null) => {
+/**
+ * Prioritas harga modal:
+ * 1) rata-rata barang masuk bulan transaksi (jika ada),
+ * 2) fallback kumulatif sampai tanggal transaksi (jika bulan itu belum ada masuk),
+ * 3) fallback harga modal produk.
+ */
+const resolveProductPurchaseCost = async (connection, productId, upToDate = null) => {
   const product = await getProductById(connection, productId)
   const fallbackPrice = Number(product?.purchase_price || 0)
   const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
@@ -218,34 +197,48 @@ const getProductPurchaseCostPreview = async (connection, productId, upToDate = n
     }
   }
 
-  if (!validDate) {
-    const { totalQty, totalCost } = await getIncomingCostSummary(connection, productId)
-    const averagePurchasePrice = totalQty > 0 && totalCost > 0 ? totalCost / totalQty : fallbackPrice
-    return {
-      averagePurchasePrice,
-      totalQty,
-      totalCost,
-      cost_basis: 'all_time',
-      transaction_date: null,
+  if (validDate) {
+    const monthRange = getMonthDateRange(validDate.slice(0, 7))
+    if (monthRange) {
+      const monthly = await getIncomingCostSummary(connection, productId, {
+        upToDate: validDate,
+        periodStartDate: monthRange.startDate,
+        periodEndDateExclusive: monthRange.endDateExclusive,
+      })
+      if (monthly.totalQty > 0 && monthly.totalCost > 0) {
+        return {
+          averagePurchasePrice: monthly.totalCost / monthly.totalQty,
+          totalQty: monthly.totalQty,
+          totalCost: monthly.totalCost,
+          cost_basis: 'monthly',
+          transaction_date: validDate,
+          period_start: monthRange.startDate,
+          period_end: validDate,
+        }
+      }
     }
-  }
 
-  const monthRange = getMonthDateRange(validDate.slice(0, 7))
-  if (monthRange) {
-    const { totalQty, totalCost } = await getIncomingCostSummary(connection, productId, {
-      upToDate: validDate,
-      periodStartDate: monthRange.startDate,
-      periodEndDateExclusive: monthRange.endDateExclusive,
-    })
-    if (totalQty > 0 && totalCost > 0) {
+    const cumulative = await getIncomingCostSummary(connection, productId, { upToDate: validDate })
+    if (cumulative.totalQty > 0 && cumulative.totalCost > 0) {
       return {
-        averagePurchasePrice: totalCost / totalQty,
-        totalQty,
-        totalCost,
-        cost_basis: 'monthly',
+        averagePurchasePrice: cumulative.totalCost / cumulative.totalQty,
+        totalQty: cumulative.totalQty,
+        totalCost: cumulative.totalCost,
+        cost_basis: 'cumulative',
         transaction_date: validDate,
-        period_start: monthRange.startDate,
+        period_start: null,
         period_end: validDate,
+      }
+    }
+  } else {
+    const allTime = await getIncomingCostSummary(connection, productId)
+    if (allTime.totalQty > 0 && allTime.totalCost > 0) {
+      return {
+        averagePurchasePrice: allTime.totalCost / allTime.totalQty,
+        totalQty: allTime.totalQty,
+        totalCost: allTime.totalCost,
+        cost_basis: 'all_time',
+        transaction_date: null,
       }
     }
   }
@@ -258,6 +251,14 @@ const getProductPurchaseCostPreview = async (connection, productId, upToDate = n
     transaction_date: validDate,
   }
 }
+
+const getProductAveragePurchasePrice = async (connection, productId, upToDate = null) => {
+  const preview = await resolveProductPurchaseCost(connection, productId, upToDate)
+  return preview.averagePurchasePrice
+}
+
+const getProductPurchaseCostPreview = async (connection, productId, upToDate = null) =>
+  resolveProductPurchaseCost(connection, productId, upToDate)
 
 const normalizeReferenceNo = (referenceNo) => {
   if (referenceNo == null) return null
