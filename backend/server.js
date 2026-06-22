@@ -132,87 +132,192 @@ const getMonthDateRange = (monthValue) => {
   return { startDate, endDateExclusive }
 }
 
-const getIncomingCostSummary = async (
-  connection,
-  productId,
-  { upToDate = null, periodStartDate = null, periodEndDateExclusive = null } = {},
-) => {
-  const dateClauses = []
-  const queryParams = [productId]
-  const validDate = normalizeDateInput(upToDate)
-  const validPeriodStart = normalizeDateInput(periodStartDate)
-  const validPeriodEndExclusive = normalizeDateInput(periodEndDateExclusive)
+const roundPurchasePrice = (value) => Math.round(Number(value || 0))
 
-  if (validDate) {
-    dateClauses.push('transaction_date <= ?')
-    queryParams.push(validDate)
-  }
-  if (validPeriodStart) {
-    dateClauses.push('transaction_date >= ?')
-    queryParams.push(validPeriodStart)
-  }
-  if (validPeriodEndExclusive) {
-    dateClauses.push('transaction_date < ?')
-    queryParams.push(validPeriodEndExclusive)
-  }
+const INVENTORY_EVENT_ORDER = { initial: 0, incoming: 1, outgoing: 2 }
 
-  const extraDateWhere = dateClauses.length ? `AND ${dateClauses.join(' AND ')}` : ''
-  const [rows] = await connection.execute(
-    `
-    SELECT
-      COALESCE(SUM(quantity), 0) AS total_qty,
-      COALESCE(SUM(quantity * purchase_price), 0) AS total_cost
-    FROM incoming_goods
-    WHERE product_id = ?
-      ${extraDateWhere}
-    `,
-    queryParams,
-  )
+const compareInventoryEvents = (a, b) => {
+  if (a.transaction_date !== b.transaction_date) {
+    return a.transaction_date.localeCompare(b.transaction_date)
+  }
+  const orderA = INVENTORY_EVENT_ORDER[a.type] ?? 9
+  const orderB = INVENTORY_EVENT_ORDER[b.type] ?? 9
+  if (orderA !== orderB) return orderA - orderB
+  return Number(a.id) - Number(b.id)
+}
 
+const applyMovingAverageIncoming = (state, quantity, purchasePrice) => {
+  const inQty = Number(quantity || 0)
+  const inPrice = Number(purchasePrice || 0)
+  if (inQty <= 0) return state
+
+  const nextQty = state.qty + inQty
+  const nextAvg = nextQty > 0 ? (state.qty * state.avgCost + inQty * inPrice) / nextQty : inPrice
+
+  return { qty: nextQty, avgCost: nextAvg }
+}
+
+const applyMovingAverageOutgoing = (state, quantity) => {
+  const outQty = Number(quantity || 0)
+  const costAtSale = roundPurchasePrice(state.avgCost)
   return {
-    totalQty: Number(rows[0]?.total_qty || 0),
-    totalCost: Number(rows[0]?.total_cost || 0),
+    state: {
+      qty: Math.max(0, state.qty - outQty),
+      avgCost: state.avgCost,
+    },
+    costAtSale,
   }
 }
 
-const roundPurchasePrice = (value) => Math.round(Number(value || 0))
+const loadInventoryEvents = async (connection, productId, product = null) => {
+  const productRow = product || (await getProductById(connection, productId))
+  if (!productRow) return []
 
-/**
- * Harga modal barang keluar = rata-rata tertimbang kumulatif semua barang masuk
- * sampai tanggal transaksi (termasuk hari yang sama).
- *
- * Contoh: masuk 14 Apr @ 42.452 → keluar sebelum 26 Apr = 42.452.
- * Masuk 26 Apr ditambah → keluar 26 Apr ke atas = rata-rata (14 Apr + 26 Apr) ≈ 42.403.
- * Masuk 28–29 Apr → rata-rata dihitung ulang dari semua masuk s/d tanggal keluar ≈ 42.248.
- */
-const resolveProductPurchaseCost = async (connection, productId, upToDate = null) => {
+  const events = []
+  const initialQty = Number(productRow.initial_stock || 0)
+  if (initialQty > 0) {
+    events.push({
+      type: 'initial',
+      id: 0,
+      product_id: Number(productId),
+      quantity: initialQty,
+      purchase_price: Number(productRow.purchase_price || 0),
+      transaction_date: normalizeDateInput(productRow.created_at) || '1970-01-01',
+    })
+  }
+
+  const [incomingRows] = await connection.execute(
+    `
+    SELECT id, product_id, quantity, purchase_price, transaction_date
+    FROM incoming_goods
+    WHERE product_id = ?
+    `,
+    [productId],
+  )
+
+  for (const row of incomingRows) {
+    events.push({
+      type: 'incoming',
+      id: Number(row.id),
+      product_id: Number(row.product_id),
+      quantity: Number(row.quantity || 0),
+      purchase_price: Number(row.purchase_price || 0),
+      transaction_date: normalizeDateInput(row.transaction_date),
+    })
+  }
+
+  const [outgoingRows] = await connection.execute(
+    `
+    SELECT id, product_id, quantity, transaction_date
+    FROM outgoing_goods
+    WHERE product_id = ?
+    `,
+    [productId],
+  )
+
+  for (const row of outgoingRows) {
+    events.push({
+      type: 'outgoing',
+      id: Number(row.id),
+      product_id: Number(row.product_id),
+      quantity: Number(row.quantity || 0),
+      purchase_price: 0,
+      transaction_date: normalizeDateInput(row.transaction_date),
+    })
+  }
+
+  return events.filter((event) => event.transaction_date).sort(compareInventoryEvents)
+}
+
+const replayMovingAverageForProduct = async (
+  connection,
+  productId,
+  { stopBeforeOutgoingId = null, upToDate = null } = {},
+) => {
   const product = await getProductById(connection, productId)
-  const fallbackPrice = Number(product?.purchase_price || 0)
-  const hasIncomingPurchasePrice = await hasColumn(connection, 'incoming_goods', 'purchase_price')
-  const validDate = normalizeDateInput(upToDate)
+  if (!product) {
+    return { outgoingPrices: new Map(), currentQty: 0, currentAvgCost: 0 }
+  }
 
-  if (!hasIncomingPurchasePrice) {
-    return {
-      averagePurchasePrice: roundPurchasePrice(fallbackPrice),
-      totalQty: 0,
-      totalCost: 0,
-      cost_basis: 'product_fallback',
-      transaction_date: validDate,
+  const events = await loadInventoryEvents(connection, productId, product)
+  const validUpToDate = normalizeDateInput(upToDate)
+  let state = { qty: 0, avgCost: Number(product.purchase_price || 0) }
+  const outgoingPrices = new Map()
+
+  for (const event of events) {
+    if (validUpToDate && event.transaction_date > validUpToDate) break
+
+    if (
+      event.type === 'outgoing' &&
+      stopBeforeOutgoingId &&
+      Number(event.id) === Number(stopBeforeOutgoingId)
+    ) {
+      return {
+        outgoingPrices,
+        currentQty: state.qty,
+        currentAvgCost: roundPurchasePrice(state.avgCost),
+      }
+    }
+
+    if (event.type === 'initial' || event.type === 'incoming') {
+      state = applyMovingAverageIncoming(state, event.quantity, event.purchase_price)
+      continue
+    }
+
+    if (event.type === 'outgoing') {
+      const result = applyMovingAverageOutgoing(state, event.quantity)
+      state = result.state
+      outgoingPrices.set(Number(event.id), result.costAtSale)
     }
   }
 
-  const summary = await getIncomingCostSummary(
-    connection,
-    productId,
-    validDate ? { upToDate: validDate } : {},
-  )
+  return {
+    outgoingPrices,
+    currentQty: state.qty,
+    currentAvgCost: roundPurchasePrice(state.avgCost),
+  }
+}
 
-  if (summary.totalQty > 0 && summary.totalCost > 0) {
+const recalculateOutgoingPurchasePricesForProduct = async (connection, productId) => {
+  const { outgoingPrices } = await replayMovingAverageForProduct(connection, productId)
+  for (const [outgoingId, price] of outgoingPrices.entries()) {
+    await connection.execute('UPDATE outgoing_goods SET purchase_price = ? WHERE id = ?', [price, outgoingId])
+  }
+}
+
+const recalculateOutgoingPurchasePricesForAllProducts = async (connection) => {
+  const [rows] = await connection.execute('SELECT id FROM products')
+  let updatedProducts = 0
+  for (const row of rows) {
+    await recalculateOutgoingPurchasePricesForProduct(connection, row.id)
+    updatedProducts += 1
+  }
+  return updatedProducts
+}
+
+/**
+ * Moving average berbasis sisa stok:
+ * - Keluar: pakai rata-rata stok saat ini (stok berkurang, rata-rata tetap)
+ * - Masuk: rata-rata baru = (sisa × harga lama + masuk × harga baru) ÷ (sisa + masuk)
+ * - Batch yang sudah habis tidak ikut hitungan lagi
+ */
+const resolveProductPurchaseCost = async (connection, productId, upToDate = null, options = {}) => {
+  const product = await getProductById(connection, productId)
+  const fallbackPrice = roundPurchasePrice(product?.purchase_price || 0)
+  const validDate = normalizeDateInput(upToDate)
+  const { stopBeforeOutgoingId = null } = options
+
+  const replay = await replayMovingAverageForProduct(connection, productId, {
+    stopBeforeOutgoingId,
+    upToDate: stopBeforeOutgoingId ? null : validDate,
+  })
+
+  if (replay.currentQty > 0 || replay.currentAvgCost > 0) {
     return {
-      averagePurchasePrice: roundPurchasePrice(summary.totalCost / summary.totalQty),
-      totalQty: summary.totalQty,
-      totalCost: summary.totalCost,
-      cost_basis: validDate ? 'cumulative' : 'all_time',
+      averagePurchasePrice: replay.currentAvgCost || fallbackPrice,
+      totalQty: replay.currentQty,
+      totalCost: replay.currentAvgCost * replay.currentQty,
+      cost_basis: 'moving_average',
       transaction_date: validDate,
       period_start: null,
       period_end: validDate,
@@ -220,7 +325,7 @@ const resolveProductPurchaseCost = async (connection, productId, upToDate = null
   }
 
   return {
-    averagePurchasePrice: roundPurchasePrice(fallbackPrice),
+    averagePurchasePrice: fallbackPrice,
     totalQty: 0,
     totalCost: 0,
     cost_basis: 'product_fallback',
@@ -228,13 +333,13 @@ const resolveProductPurchaseCost = async (connection, productId, upToDate = null
   }
 }
 
-const getProductAveragePurchasePrice = async (connection, productId, upToDate = null) => {
-  const preview = await resolveProductPurchaseCost(connection, productId, upToDate)
+const getProductAveragePurchasePrice = async (connection, productId, upToDate = null, options = {}) => {
+  const preview = await resolveProductPurchaseCost(connection, productId, upToDate, options)
   return preview.averagePurchasePrice
 }
 
-const getProductPurchaseCostPreview = async (connection, productId, upToDate = null) =>
-  resolveProductPurchaseCost(connection, productId, upToDate)
+const getProductPurchaseCostPreview = async (connection, productId, upToDate = null, options = {}) =>
+  resolveProductPurchaseCost(connection, productId, upToDate, options)
 
 const normalizeReferenceNo = (referenceNo) => {
   if (referenceNo == null) return null
@@ -970,6 +1075,7 @@ app.post('/api/incoming', async (req, res) => {
     )
 
     await recalculateStockByProductId(connection, product_id)
+    await recalculateOutgoingPurchasePricesForProduct(connection, product_id)
     await logActivity(connection, 'CREATE_INCOMING', `Barang masuk ${product.name} sebanyak ${quantity}`)
     await connection.commit()
 
@@ -1026,6 +1132,10 @@ app.put('/api/incoming/:id', async (req, res) => {
     if (Number(old.product_id) !== Number(product_id)) {
       await recalculateStockByProductId(connection, product_id)
     }
+    await recalculateOutgoingPurchasePricesForProduct(connection, old.product_id)
+    if (Number(old.product_id) !== Number(product_id)) {
+      await recalculateOutgoingPurchasePricesForProduct(connection, product_id)
+    }
 
     await logActivity(connection, 'UPDATE_INCOMING', `Edit barang masuk ${product.name} sebanyak ${quantity}`)
     await connection.commit()
@@ -1065,6 +1175,7 @@ app.delete('/api/incoming/:id', async (req, res) => {
 
     await connection.execute('DELETE FROM incoming_goods WHERE id = ?', [id])
     await recalculateStockByProductId(connection, rows[0].product_id)
+    await recalculateOutgoingPurchasePricesForProduct(connection, rows[0].product_id)
     await logActivity(connection, 'DELETE_INCOMING', `Hapus barang masuk ${rows[0].name}`)
     await connection.commit()
 
@@ -1132,22 +1243,16 @@ app.get('/api/outgoing', async (req, res) => {
         )
 
     res.json({
-      data: await Promise.all(
-        rows.map(async (row) => {
-          const livePurchasePrice = await getProductAveragePurchasePrice(
-            connection,
-            row.product_id,
-            row.transaction_date,
-          )
-          const qty = Number(row.quantity || 0)
-          return {
-            ...row,
-            purchase_price: livePurchasePrice,
-            total_purchase: livePurchasePrice * qty,
-            total_selling: Number(row.selling_price || 0) * qty,
-          }
-        }),
-      ),
+      data: rows.map((row) => {
+        const purchasePrice = Number(row.purchase_price || 0)
+        const qty = Number(row.quantity || 0)
+        return {
+          ...row,
+          purchase_price: purchasePrice,
+          total_purchase: purchasePrice * qty,
+          total_selling: Number(row.selling_price || 0) * qty,
+        }
+      }),
       meta: {
         page: isExport ? 1 : meta.page,
         limit: isExport ? rows.length : meta.limit,
@@ -1210,6 +1315,7 @@ app.post('/api/outgoing', async (req, res) => {
     )
 
     await recalculateStockByProductId(connection, product_id)
+    await recalculateOutgoingPurchasePricesForProduct(connection, product_id)
     await logActivity(connection, 'CREATE_OUTGOING', `Barang keluar ${product.name} sebanyak ${quantity}`)
     await connection.commit()
 
@@ -1265,6 +1371,7 @@ app.put('/api/outgoing/:id', async (req, res) => {
       connection,
       product_id,
       normalizeDateInput(transaction_date),
+      { stopBeforeOutgoingId: Number(id) },
     )
 
     const refNorm = normalizeReferenceNo(reference_no)
@@ -1291,6 +1398,10 @@ app.put('/api/outgoing/:id', async (req, res) => {
     await recalculateStockByProductId(connection, old.product_id)
     if (Number(old.product_id) !== Number(product_id)) {
       await recalculateStockByProductId(connection, product_id)
+    }
+    await recalculateOutgoingPurchasePricesForProduct(connection, old.product_id)
+    if (Number(old.product_id) !== Number(product_id)) {
+      await recalculateOutgoingPurchasePricesForProduct(connection, product_id)
     }
 
     await logActivity(connection, 'UPDATE_OUTGOING', `Edit barang keluar ${product.name} sebanyak ${quantity}`)
@@ -1332,6 +1443,7 @@ app.delete('/api/outgoing/:id', async (req, res) => {
 
     await connection.execute('DELETE FROM outgoing_goods WHERE id = ?', [id])
     await recalculateStockByProductId(connection, rows[0].product_id)
+    await recalculateOutgoingPurchasePricesForProduct(connection, rows[0].product_id)
     await logActivity(connection, 'DELETE_OUTGOING', `Hapus barang keluar ${rows[0].name}`)
     await connection.commit()
 
@@ -1388,57 +1500,35 @@ app.get('/api/bookkeeping', async (req, res) => {
       [...whereParams, meta.limit, meta.offset],
     )
 
-    const data = await Promise.all(
-      rows.map(async (row) => {
-        const qty = Number(row.quantity || 0)
-        const livePurchase = await getProductAveragePurchasePrice(
-          connection,
-          row.product_id,
-          row.transaction_date,
-        )
-        const sellingPrice = Number(row.selling_price || 0)
-        const margin =
-          sellingPrice > 0
-            ? (sellingPrice - Number(row.discount || 0) - livePurchase) * qty
-            : 0
-        return {
-          ...row,
-          selling_price: sellingPrice > 0 ? row.selling_price : 0,
-          purchase_price: livePurchase,
-          margin,
-        }
-      }),
-    )
+    const data = rows.map((row) => {
+      const qty = Number(row.quantity || 0)
+      const purchasePrice = Number(row.purchase_price || 0)
+      const sellingPrice = Number(row.selling_price || 0)
+      const margin =
+        sellingPrice > 0 ? (sellingPrice - Number(row.discount || 0) - purchasePrice) * qty : 0
+      return {
+        ...row,
+        selling_price: sellingPrice > 0 ? row.selling_price : 0,
+        purchase_price: purchasePrice,
+        margin,
+      }
+    })
 
     const [statRows] = await connection.execute(
       `
-      SELECT
-        og.product_id,
-        og.quantity,
-        og.selling_price,
-        og.discount,
-        og.transaction_date
+      SELECT og.quantity, og.purchase_price, og.selling_price, og.discount
       FROM outgoing_goods og
       ${where}
       `,
       whereParams,
     )
-    const statsRows = await Promise.all(
-      statRows.map(async (row) => {
-        const purchase = await getProductAveragePurchasePrice(
-          connection,
-          row.product_id,
-          row.transaction_date,
-        )
-        return { ...row, _purchase: purchase }
-      }),
-    )
-    const stats = statsRows.reduce(
+
+    const allStats = statRows.reduce(
       (acc, row) => {
         const qty = Number(row.quantity || 0)
         const selling = Number(row.selling_price || 0)
         const discount = Number(row.discount || 0)
-        const purchase = Number(row._purchase || 0)
+        const purchase = Number(row.purchase_price || 0)
         acc.total_transactions += 1
         acc.total_purchase += purchase * qty
         acc.total_revenue += selling * qty
@@ -1450,7 +1540,7 @@ app.get('/api/bookkeeping', async (req, res) => {
 
     res.json({
       data,
-      stats,
+      stats: allStats,
       meta: {
         page: meta.page,
         limit: meta.limit,
@@ -1478,7 +1568,12 @@ app.post('/api/bookkeeping', async (req, res) => {
     }
 
     const productId = rows[0].product_id
-    const averagePurchasePrice = await getProductAveragePurchasePrice(connection, productId, rows[0].transaction_date)
+    const averagePurchasePrice = await getProductAveragePurchasePrice(
+      connection,
+      productId,
+      rows[0].transaction_date,
+      { stopBeforeOutgoingId: Number(outgoing_id) },
+    )
 
     await connection.execute(
       `
@@ -1492,6 +1587,25 @@ app.post('/api/bookkeeping', async (req, res) => {
     await logActivity(connection, 'UPDATE_BOOKKEEPING', `Edit pembukuan transaksi keluar #${outgoing_id}`)
     await connection.commit()
     res.json({ message: 'Pembukuan berhasil diperbarui' })
+  } catch (error) {
+    await connection.rollback()
+    res.status(500).json({ message: error.message })
+  } finally {
+    connection.release()
+  }
+})
+
+app.post('/api/inventory/recalculate-costs', async (req, res) => {
+  const connection = await pool.getConnection()
+  try {
+    await connection.beginTransaction()
+    const updatedProducts = await recalculateOutgoingPurchasePricesForAllProducts(connection)
+    await logActivity(connection, 'RECALCULATE_COSTS', `Recalculate harga modal moving average: ${updatedProducts} produk`)
+    await connection.commit()
+    res.json({
+      message: 'Harga modal barang keluar berhasil dihitung ulang',
+      updated_products: updatedProducts,
+    })
   } catch (error) {
     await connection.rollback()
     res.status(500).json({ message: error.message })

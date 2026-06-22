@@ -50,6 +50,7 @@ export const apiService = {
 
   getBookkeeping: (params) => api.get('/bookkeeping', { params }),
   updateBookkeeping: (payload) => api.post('/bookkeeping', payload),
+  recalculateInventoryCosts: () => api.post('/inventory/recalculate-costs'),
 
   getActivity: (params) => api.get('/activity', { params }),
 }
