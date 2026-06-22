@@ -521,7 +521,9 @@ export default function OutgoingPage({ products, onChanged }) {
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-slate-500">Harga Modal (otomatis)</label>
+              <label className="mb-1 block text-xs text-slate-500">
+                Harga Modal (rata-rata kumulatif s/d tanggal ini)
+              </label>
               <input
                 type="text"
                 className="input bg-slate-50"
